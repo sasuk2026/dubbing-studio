@@ -25,7 +25,7 @@ body {
   overflow: hidden;
 }
 
-.view { height: 100vh; }
+.view { height: 100vh; height: 100dvh; }
 [hidden] { display: none !important; }
 
 /* ---------- 通用控件 ---------- */
@@ -275,7 +275,38 @@ label { display: block; color: var(--muted); font-size: 12px; margin: 14px 0 6px
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 920px) {
-  .room-main { grid-template-columns: 1fr; grid-template-rows: 1fr 320px; }
+  .room-main { grid-template-columns: 1fr; grid-template-rows: 1fr 300px; }
   .side-panel { border-left: none; border-top: 1px solid var(--border); }
   .room-header { flex-wrap: wrap; }
+  .room-users { flex-shrink: 1; flex-wrap: wrap; }
+  .home-card { padding: 28px; }
+}
+
+/* 手机端：动态视口 + 紧凑布局，修复底部导出栏被遮挡/横向溢出/边框覆盖问题 */
+@media (max-width: 640px) {
+  .view { height: 100vh; height: 100dvh; }
+  #room-view { height: 100vh; height: 100dvh; }
+  .room-header { padding: 8px 12px; gap: 6px; }
+  .room-title { font-size: 14px; }
+  .room-users { width: 100%; gap: 6px; }
+  #header-account { display: none; }
+  .conn { display: none; }
+  .invite-bar { padding: 8px 12px; font-size: 12px; }
+  .invite-bar input { min-width: 0; flex-basis: 100%; }
+  .room-main { grid-template-rows: 1fr 240px; }
+  .lines-list { padding: 4px 12px 12px; }
+  .panel-head { padding: 10px 12px 6px; }
+  .export-bar { padding: 8px 12px; gap: 8px; }
+  .dub-zone { width: 100%; }
+  .dub-label { max-width: 52vw; }
+  .export-actions { width: 100%; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .export-actions .btn { flex: 1; min-width: 0; font-size: 11px; padding: 7px 4px; justify-content: center; overflow: hidden; text-overflow: ellipsis; }
+  .line-card { padding: 10px; gap: 8px; }
+  .line-actions .btn { padding: 6px 8px; }
+  .home-card { padding: 22px 18px; border-radius: 16px; }
+  .logo { font-size: 24px; }
+  .join-box { min-width: 0; flex-basis: 100%; }
+  .modal { padding: 16px; gap: 10px; }
+  .toasts { top: 8px; }
+  .toast { max-width: 92vw; }
 }
