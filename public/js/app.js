@@ -763,5 +763,15 @@ $('btn-leave').addEventListener('click', () => {
 (function boot() {
   initHome();
   const m = location.pathname.match(/^\/r\/([A-Za-z0-9]{3,12})$/);
-  if (m) enterRoom(decodeURIComponent(m[1]).toUpperCase());
+  if (m) {
+    const roomId = decodeURIComponent(m[1]).toUpperCase();
+    const nick = (localStorage.getItem(LS_NICK) || '').trim();
+    if (nick) {
+      enterRoom(roomId);
+    } else {
+      // 未设置昵称：留在首页并预填房间号，避免以匿名身份进房
+      $('join-id').value = roomId;
+      toast('输入昵称后点击「加入」进入配音室', 'info', 6000);
+    }
+  }
 })();
