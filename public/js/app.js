@@ -427,6 +427,7 @@ function renderLines() {
         </div>`;
     } else {
       card.innerHTML = `
+        ${line.take ? `<input type="checkbox" class="part-check" data-line-id="${line.id}" checked title="勾选参与「分段导出」">` : '<span class="part-check-empty"></span>'}
         <div class="line-no">${i + 1}</div>
         <div class="line-body">
           <div class="line-meta">
@@ -555,8 +556,9 @@ on('lines-list', 'click', async (e) => {
   if (!line) return;
   const btn = e.target.closest('[data-action]');
 
-  // 点击卡片本体：选中/取消选中该句
+  // 点击卡片本体：选中/取消选中该句（勾选框不触发选中）
   if (!btn) {
+    if (e.target.classList.contains('part-check')) return;
     if (state.editingLineId !== lineId) selectLine(lineId);
     return;
   }
@@ -643,7 +645,7 @@ async function openRecorder(line) {
   state.rec = { lineId: line.id, rec, blob: null, duration: 0 };
   rec.onTick = (ms) => { $('rec-timer').textContent = AudioKit.fmtTime(ms / 1000); };
   rec.onLevel = (lv) => drawMeter(lv);
-  rec.onStop = ({ blob, duration, error }) => {
+  rec.onStop = ({ blob, duration, error, channels }) => {
     if (!blob) {
       $('rec-state').textContent = error || '录音失败';
       toast(error || '录音失败，请重试', 'error');
@@ -651,7 +653,10 @@ async function openRecorder(line) {
     }
     state.rec.blob = blob;
     state.rec.duration = duration;
-    const losslessTag = state.rec.rec.lossless ? ' · 无损 WAV' : '';
+    let losslessTag = '';
+    if (state.rec.rec.lossless) {
+      losslessTag = channels > 1 ? ' · 无损 32bit 立体声 WAV' : ' · 无损 32bit WAV';
+    }
     $('rec-state').textContent = `录音完成（${AudioKit.fmtTime(duration)}${losslessTag}），可试听或保存`;
     $('rec-timer').textContent = AudioKit.fmtTime(duration);
     $('btn-rec-stop').hidden = true;
@@ -922,25 +927,35 @@ on('btn-export-all', 'click', async () => {
 });
 
 on('btn-export-parts', 'click', async () => {
-  const lines = state.room.lines.filter((l) => l.take);
-  if (!lines.length) return toast('还没有已录制的台词', 'warn');
+  const all = state.room.lines.filter((l) => l.take);
+  if (!all.length) return toast('还没有已录制的台词', 'warn');
+  // 仅导出勾选的段；一个都没勾则默认全部
+  const checks = [...document.querySelectorAll('.part-check')];
+  const chosen = checks.length
+    ? all.filter((l) => { const c = checks.find((el) => el.dataset.lineId === l.id); return c ? c.checked : false; })
+    : all;
+  if (!chosen.length) return toast('请先在台词卡片左侧勾选要导出的段', 'warn');
   const btn = $('btn-export-parts');
   btn.disabled = true;
   try {
+    const opts = mergeOpts();
     const files = [];
-    for (let i = 0; i < lines.length; i++) {
-      toast(`正在打包第 ${i + 1}/${lines.length} 条…`, 'info', 1500);
-      const r = await authFetch(lines[i].take.url);
+    for (let i = 0; i < chosen.length; i++) {
+      toast(`正在转码第 ${i + 1}/${chosen.length} 条…`, 'info', 1500);
+      const r = await authFetch(chosen[i].take.url);
       if (!r.ok) throw new Error(`第 ${i + 1} 条录音下载失败`);
       const blob = await r.blob();
-      const ext = AudioKit.extFor(blob.type);
-      const speaker = lines[i].speaker ? lines[i].speaker + '-' : '';
-      const safe = (speaker + lines[i].text).replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 40);
-      files.push({ name: `${String(i + 1).padStart(2, '0')}_${safe}.${ext}`, blob });
+      // 每段独立走一遍合成管线：统一应用语速设置，输出单段 MP3（或 WAV）
+      const { blob: out, ext } = await AudioKit.mergeTakes([blob], {
+        speed: opts.speed, gapMs: 0, format: opts.format, kbps: opts.kbps,
+      });
+      const speaker = chosen[i].speaker ? chosen[i].speaker + '-' : '';
+      const safe = (speaker + chosen[i].text).replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 40);
+      files.push({ name: `${String(i + 1).padStart(2, '0')}_${safe}.${ext}`, blob: out });
     }
     const zip = await AudioKit.makeZip(files);
-    AudioKit.downloadBlob(zip, `${state.room.name}-分段录音.zip`);
-    toast('分段导出完成 🎉', 'ok');
+    AudioKit.downloadBlob(zip, `${state.room.name}-分段导出-${files.length}段.zip`);
+    toast(`分段导出完成：${files.length} 个 ${opts.format === 'wav' ? 'WAV' : 'MP3'} 🎉`, 'ok');
   } catch (e) {
     toast('分段导出失败：' + e.message, 'error');
   } finally {
@@ -1189,7 +1204,7 @@ on('btn-missing-home', 'click', () => {
 // 版本自检：若浏览器拿到的是旧版 HTML（如缓存未过期），与新版 JS 组合会导致
 // 元素缺失、脚本失效。检测到版本不匹配时强制刷新（带防循环保护）。
 (function versionGuard() {
-  const APP_VERSION = '4';
+  const APP_VERSION = '5';
   const meta = document.querySelector('meta[name="app-version"]');
   if (meta && meta.content !== APP_VERSION) {
     try {

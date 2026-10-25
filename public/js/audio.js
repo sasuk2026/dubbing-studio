@@ -10,6 +10,33 @@
 
 const AudioKit = (() => {
 
+  /* ---------- 共享 AudioContext ---------- *
+   * Chrome 规定同一页面最多同时存在 6 个硬件 AudioContext，
+   * 每次导出都 new 一个，用户多点几次导出后必然报
+   * "Failed to construct 'AudioContext': ... greater than or equal to the maximum allowed (6)"，
+   * 表现为「总体导出失败」且之后所有音频功能全部失灵。
+   * 这里改为模块级单例复用，从根本上避免上下文耗尽。 */
+  let _sharedCtx = null;
+  function sharedCtx() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!_sharedCtx || _sharedCtx.state === 'closed') _sharedCtx = new Ctx();
+    return _sharedCtx;
+  }
+
+  /* decodeAudioData 兼容封装：老版本 Safari 的 Promise 形式不可靠，回调 + Promise 双保险 */
+  function decodeAudio(ctx, arrayBuffer) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const ok = (b) => { if (!settled) { settled = true; resolve(b); } };
+      const err = (e) => { if (!settled) { settled = true; reject(e instanceof Error ? e : new Error('音频解码失败')); } };
+      let p;
+      try {
+        p = ctx.decodeAudioData(arrayBuffer, ok, err);
+      } catch (e) { err(e); return; }
+      if (p && typeof p.then === 'function') p.then(ok, err);
+    });
+  }
+
   function pickMime() {
     const candidates = [
       'audio/webm;codecs=opus',
@@ -45,7 +72,7 @@ const AudioKit = (() => {
       this.audioCtx = null;
       this.meterRaf = null;
       this.lossless = false;   // true = ScriptProcessor 捕获 PCM → WAV
-      this.pcmChunks = [];     // 无损模式：Float32Array 分片
+      this.pcmChunks = null;    // 无损模式：分片数组（每片 = 各声道 Float32Array）
       this.processor = null;
       this.silentGain = null;
       this.onTick = null;   // (ms) => void
@@ -92,16 +119,26 @@ const AudioKit = (() => {
       this.recorder.start(250);
     }
 
-    // 无损模式：ScriptProcessorNode 直接捕获麦克风 PCM，停止时编码 16-bit WAV
+    // 无损模式：ScriptProcessorNode 直接捕获麦克风 PCM，停止时编码 32-bit 浮点 WAV
     startPcmCapture() {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!this.audioCtx) this.audioCtx = new Ctx();
+      if (!this.audioCtx) this.audioCtx = sharedCtx();
       const src = this.audioCtx.createMediaStreamSource(this.stream);
+      // 按麦克风音轨实际通道数采集（单声道麦克风录单声道，立体声设备录立体声），不做下混
+      let trackCh = 1;
+      try {
+        const t = this.stream.getAudioTracks()[0];
+        if (t && t.getSettings) trackCh = t.getSettings().channelCount || 1;
+      } catch (e) { /* 用默认单声道 */ }
+      this.pcmChannels = Math.max(1, Math.min(2, trackCh));
       this.pcmChunks = [];
-      const processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
+      const processor = this.audioCtx.createScriptProcessor(4096, this.pcmChannels, this.pcmChannels);
       processor.onaudioprocess = (e) => {
         if (!this.pcmChunks) return;
-        this.pcmChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+        const frames = [];
+        for (let c = 0; c < this.pcmChannels; c++) {
+          frames.push(new Float32Array(e.inputBuffer.getChannelData(c)));
+        }
+        this.pcmChunks.push(frames);
       };
       // 经静音增益接到 destination：保证 onaudioprocess 触发，且不外放啸叫
       this.silentGain = this.audioCtx.createGain();
@@ -114,8 +151,7 @@ const AudioKit = (() => {
 
     setupMeter() {
       try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!this.audioCtx) this.audioCtx = new Ctx();
+        if (!this.audioCtx) this.audioCtx = sharedCtx();
         const src = this.audioCtx.createMediaStreamSource(this.stream);
         this.analyser = this.audioCtx.createAnalyser();
         this.analyser.fftSize = 256;
@@ -144,21 +180,28 @@ const AudioKit = (() => {
 
     finishPcm() {
       const sr = this.audioCtx ? this.audioCtx.sampleRate : 44100;
-      const total = this.pcmChunks.reduce((s, c) => s + c.length, 0);
+      const channels = this.pcmChannels || 1;
+      const chunks = this.pcmChunks || [];
+      const total = chunks.reduce((s, c) => s + c[0].length, 0);
       const duration = Math.max(1, Math.round((Date.now() - this.startedAt) / 1000));
       if (!total) {
         this.cleanup();
         if (this.onStop) this.onStop({ blob: null, duration, mime: '', error: '未捕获到音频' });
         return;
       }
-      const pcm = new Float32Array(total);
-      let off = 0;
-      for (const c of this.pcmChunks) { pcm.set(c, off); off += c.length; }
-      const buf = this.audioCtx.createBuffer(1, total, sr);
-      buf.copyToChannel(pcm, 0);
-      const blob = audioBufferToWav(buf);
+      const buf = this.audioCtx.createBuffer(channels, total, sr);
+      for (let c = 0; c < channels; c++) {
+        const dst = buf.getChannelData(c);
+        let off = 0;
+        for (const chunk of chunks) {
+          dst.set(chunk[Math.min(c, chunk.length - 1)], off);
+          off += chunk[0].length;
+        }
+      }
+      // 32-bit 浮点 WAV：位完美保留麦克风原始采样
+      const blob = audioBufferToWav(buf, { float: true });
       this.cleanup();
-      if (this.onStop) this.onStop({ blob, duration, mime: 'audio/wav' });
+      if (this.onStop) this.onStop({ blob, duration, mime: 'audio/wav', channels });
     }
 
     cancel() {
@@ -180,7 +223,8 @@ const AudioKit = (() => {
         try { this.silentGain.disconnect(); } catch (e) { /* 忽略 */ }
       }
       if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
-      if (this.audioCtx && this.audioCtx.state !== 'closed') {
+      // 共享 ctx 不关闭：断开节点、释放轨道即可，上下文留给下一次录音/导出复用
+      if (this.audioCtx && this.audioCtx !== _sharedCtx && this.audioCtx.state !== 'closed') {
         this.audioCtx.close().catch(() => {});
       }
       this.stream = null;
@@ -199,11 +243,19 @@ const AudioKit = (() => {
     for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
   }
 
-  function audioBufferToWav(buf) {
+  /**
+   * AudioBuffer → WAV
+   * @param buf AudioBuffer
+   * @param opts {float} true = 32-bit IEEE float（真无损，保留 [-1,1] 外真实幅度）；
+   *                     false = 16-bit PCM（通用兼容）
+   */
+  function audioBufferToWav(buf, opts = {}) {
+    const float = opts.float !== false;
     const numCh = Math.max(1, Math.min(2, buf.numberOfChannels));
     const sr = buf.sampleRate;
     const frames = buf.length;
-    const blockAlign = numCh * 2;
+    const bits = float ? 32 : 16;
+    const blockAlign = numCh * (bits / 8);
     const dataSize = frames * blockAlign;
     const ab = new ArrayBuffer(44 + dataSize);
     const view = new DataView(ab);
@@ -212,22 +264,32 @@ const AudioKit = (() => {
     writeStr(view, 8, 'WAVE');
     writeStr(view, 12, 'fmt ');
     view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);        // PCM
+    view.setUint16(20, float ? 3 : 1, true); // 1 = PCM，3 = IEEE float
     view.setUint16(22, numCh, true);
     view.setUint32(24, sr, true);
     view.setUint32(28, sr * blockAlign, true);
     view.setUint16(32, blockAlign, true);
-    view.setUint16(34, 16, true);
+    view.setUint16(34, bits, true);
     writeStr(view, 36, 'data');
     view.setUint32(40, dataSize, true);
     const chans = [];
     for (let c = 0; c < numCh; c++) chans.push(buf.getChannelData(Math.min(c, buf.numberOfChannels - 1)));
     let off = 44;
-    for (let i = 0; i < frames; i++) {
-      for (let c = 0; c < numCh; c++) {
-        const s = Math.max(-1, Math.min(1, chans[c][i] || 0));
-        view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-        off += 2;
+    if (float) {
+      // 真无损：Float32 原样落盘，不量化、不钳制
+      for (let i = 0; i < frames; i++) {
+        for (let c = 0; c < numCh; c++) {
+          view.setFloat32(off, chans[c][i] || 0, true);
+          off += 4;
+        }
+      }
+    } else {
+      for (let i = 0; i < frames; i++) {
+        for (let c = 0; c < numCh; c++) {
+          const s = Math.max(-1, Math.min(1, chans[c][i] || 0));
+          view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+          off += 2;
+        }
       }
     }
     return new Blob([ab], { type: 'audio/wav' });
@@ -260,12 +322,12 @@ const AudioKit = (() => {
     const format = opts.format === 'wav' ? 'wav' : 'mp3';
     const kbps = Math.min(320, Math.max(64, Number(opts.kbps) || 192));
     const Ctx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new Ctx();
+    const ctx = sharedCtx();
     try {
       const decoded = [];
       for (const b of blobs) {
         const ab = await b.arrayBuffer();
-        decoded.push(await ctx.decodeAudioData(ab));
+        decoded.push(await decodeAudio(ctx, ab));
       }
       const sr = decoded[0].sampleRate;
       // 统一采样率 + 应用语速
@@ -297,9 +359,11 @@ const AudioKit = (() => {
       if (format === 'mp3') {
         return { blob: encodeMp3(out, kbps), ext: 'mp3', duration };
       }
-      return { blob: audioBufferToWav(out), ext: 'wav', duration };
+      // 合成导出同样走 32-bit 浮点，端到端不做有损量化
+      return { blob: audioBufferToWav(out, { float: true }), ext: 'wav', duration };
     } finally {
-      if (ctx.state !== 'closed') ctx.close().catch(() => {});
+      // 共享 ctx 不关闭：交由单例复用，避免反复 new/close 触碰浏览器上下文上限
+      if (ctx !== _sharedCtx && ctx.state !== 'closed') ctx.close().catch(() => {});
     }
   }
 

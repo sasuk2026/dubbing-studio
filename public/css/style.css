@@ -163,6 +163,12 @@ label { display: block; color: var(--muted); font-size: 12px; margin: 14px 0 6px
   padding: 12px 14px; align-items: flex-start; transition: border-color .15s, box-shadow .15s;
   cursor: pointer;
 }
+/* 分段导出勾选框 */
+.part-check {
+  flex: none; width: 16px; height: 16px; margin-top: 3px; cursor: pointer;
+  accent-color: var(--accent);
+}
+.part-check-empty { flex: none; width: 0; }
 .line-card.mine { border-left-color: var(--yellow); }
 .line-card.other { border-left-color: var(--red); opacity: .85; }
 .line-card.done { border-left-color: var(--green); }

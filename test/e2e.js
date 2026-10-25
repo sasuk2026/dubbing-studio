@@ -149,12 +149,37 @@ async function main() {
     await pageA.click('#btn-rec-stop');
     await pageA.waitForSelector('#btn-rec-save:not([hidden])', { timeout: 10000 });
     const recState = await pageA.textContent('#rec-state');
-    check('录音完成提示标注无损 WAV', recState.includes('无损 WAV'), recState);
+    check('录音完成提示标注无损 32bit WAV', recState.includes('无损 32bit WAV'), recState);
     await pageA.click('#btn-rec-save');
     await pageA.waitForSelector('#recorder-modal[hidden]', { state: 'attached', timeout: 20000 });
     await sleep(800);
     const doneCount = (await pageA.textContent('#done-count')).trim();
     check('已录制计数 = 2', doneCount === '2', doneCount);
+
+    // 验证落盘的是 32-bit IEEE float WAV（fmt 格式码 3、位深 32）
+    {
+      const head = await pageA.evaluate(async () => {
+        const token = localStorage.getItem('dub_token');
+        const roomId = location.pathname.split('/r/')[1];
+        const r = await fetch(`/api/rooms/${roomId}`, { headers: { Authorization: 'Bearer ' + token } });
+        const d = await r.json();
+        const withTake = (d.room.lines || []).filter((l) => l.take);
+        const line = withTake[withTake.length - 1]; // 最后录的那条（无损模式）
+        if (!line) return null;
+        const t = await fetch(line.take.url, { headers: { Authorization: 'Bearer ' + token } });
+        const buf = new Uint8Array(await t.arrayBuffer());
+        return Array.from(buf.slice(0, 44));
+      });
+      check('拿到无损录音文件头', Array.isArray(head) && head.length === 44, JSON.stringify(head && head.slice(0, 12)));
+      if (Array.isArray(head)) {
+        const h = Buffer.from(head);
+        const fmtCode = h.readUInt16LE(20);
+        const bits = h.readUInt16LE(34);
+        check('录音为 WAV 容器', h.toString('ascii', 0, 4) === 'RIFF' && h.toString('ascii', 8, 12) === 'WAVE');
+        check('WAV 为 IEEE float 格式（3）', fmtCode === 3, `fmt=${fmtCode}`);
+        check('WAV 位深 32-bit', bits === 32, `bits=${bits}`);
+      }
+    }
 
     console.log('\n[G] 播放与文字聊天');
     await pageA.locator('.line-card').first().locator('[data-action="play"]').click();
@@ -195,7 +220,7 @@ async function main() {
     check('MP3 文件名以 .mp3 结尾', dl1.suggestedFilename().endsWith('.mp3'), dl1.suggestedFilename());
 
     const [dl2] = await Promise.all([
-      pageA.waitForEvent('download', { timeout: 40000 }),
+      pageA.waitForEvent('download', { timeout: 60000 }),
       pageA.click('#btn-export-parts'),
     ]);
     const zipPath = path.join(DL_DIR, dl2.suggestedFilename());
@@ -206,6 +231,24 @@ async function main() {
       zipBuf.length > 100 && zipBuf[0] === 0x50 && zipBuf[1] === 0x4b,
       `${zipBuf.length} bytes`
     );
+    check(
+      'ZIP 内每段均为 MP3',
+      zipBuf.includes(Buffer.from('.mp3', 'ascii')),
+      '未在 ZIP 中找到 .mp3 文件名'
+    );
+
+    // 取消勾选第一段 → 只导出 1 段（测试环境录了 2 句）
+    const checks = pageA.locator('.part-check');
+    const checkCount = await checks.count();
+    check('台词卡片出现分段导出勾选框', checkCount >= 2, `共 ${checkCount} 个勾选框`);
+    await checks.nth(0).uncheck();
+    const [dl3] = await Promise.all([
+      pageA.waitForEvent('download', { timeout: 60000 }),
+      pageA.click('#btn-export-parts'),
+    ]);
+    check('勾选后导出文件名含段数', dl3.suggestedFilename().includes('1段'), dl3.suggestedFilename());
+    await dl3.saveAs(path.join(DL_DIR, dl3.suggestedFilename()));
+    await checks.nth(0).check(); // 恢复勾选，避免影响后续
 
     console.log('\n[I] 存入作品库');
     await pageA.click('#btn-save-work');

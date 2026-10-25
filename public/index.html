@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="4">
+<meta name="app-version" content="5">
 <title>配音工坊 · 多人在线协作配音</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
-<link rel="stylesheet" href="/css/style.css?v=4">
+<link rel="stylesheet" href="/css/style.css?v=5">
 </head>
 <body>
 
@@ -144,7 +144,7 @@
       <button id="btn-save-work" class="btn">💾 存入作品库</button>
       <button id="btn-merge-settings" class="btn" title="合成设置">⚙ 合成设置</button>
       <button id="btn-export-all" class="btn primary">⬇ 合成导出（MP3）</button>
-      <button id="btn-export-parts" class="btn">⬇ 分段导出（ZIP）</button>
+      <button id="btn-export-parts" class="btn" title="勾选台词卡片左侧复选框，每段导出为一个独立 MP3（ZIP 打包）">⬇ 分段导出（MP3）</button>
     </div>
     <div id="merge-settings" class="settings-pop" hidden>
       <div class="settings-row">
@@ -166,7 +166,7 @@
           <option value="wav">WAV · 无损音质</option>
         </select>
       </div>
-      <label class="settings-check"><input type="checkbox" id="set-lossless"> 录音用无损模式（WAV 直录，文件较大）</label>
+      <label class="settings-check"><input type="checkbox" id="set-lossless"> 录音用无损模式（32-bit 浮点 WAV 直录，立体声，文件较大）</label>
       <p class="settings-tip">设置保存在本机浏览器，合成时自动应用</p>
     </div>
   </footer>
@@ -207,7 +207,7 @@
       <span id="rec-timer" class="rec-timer">00:00</span>
     </div>
     <canvas id="rec-meter" width="480" height="60"></canvas>
-    <label class="rec-lossless"><input type="checkbox" id="rec-lossless" disabled> 无损音质（WAV 直录，于「⚙ 合成设置」预设）</label>
+    <label class="rec-lossless"><input type="checkbox" id="rec-lossless" disabled> 无损音质（32-bit 浮点 WAV，于「⚙ 合成设置」预设）</label>
     <audio id="rec-preview" controls hidden></audio>
     <div class="rec-actions">
       <button id="btn-rec-stop" class="btn primary" hidden>⏹ 停止</button>
@@ -222,9 +222,9 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/js/vendor/lame.min.js"></script>
-<script src="/js/audio.js?v=4"></script>
-<script src="/js/voice.js?v=4"></script>
-<script src="/js/fx.js?v=4"></script>
-<script src="/js/app.js?v=4"></script>
+<script src="/js/audio.js?v=5"></script>
+<script src="/js/voice.js?v=5"></script>
+<script src="/js/fx.js?v=5"></script>
+<script src="/js/app.js?v=5"></script>
 </body>
 </html>
