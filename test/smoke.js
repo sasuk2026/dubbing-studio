@@ -175,7 +175,30 @@ async function main() {
     await sleep(300);
     check('offer/answer/ice 信令转发', sigOnB && sigOnB.from === a.id && sigOnB.type === 'ice');
 
-    console.log('\n[6] 断线清理');
+    console.log('\n[6] 个人作品库');
+    const emptyWorks = await req('GET', '/api/works', null, tokenA);
+    check('作品列表初始为空', emptyWorks.status === 200 && emptyWorks.json.works.length === 0);
+    const mp3B64 = Buffer.from('SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA', 'base64').toString('base64');
+    const saveWork = await req('POST', '/api/works', {
+      name: '测试作品', duration: 3, mime: 'audio/mpeg', data: mp3B64,
+    }, tokenA);
+    check('保存作品', saveWork.status === 200 && saveWork.json.work
+      && saveWork.json.work.ext === 'mp3' && saveWork.json.work.name === '测试作品');
+    const workId = saveWork.json.work.id;
+    const worksList = await req('GET', '/api/works', null, tokenA);
+    check('作品列表包含 1 件', worksList.status === 200 && worksList.json.works.length === 1);
+    const workFile = await req('GET', `/api/works/${workId}/file`, null, tokenA);
+    check('下载作品文件', workFile.status === 200 && workFile.raw.toString('base64') === mp3B64);
+    const workOfB = await req('GET', '/api/works', null, tokenB);
+    check('作品库按账号隔离（B 看不到 A 的作品）', workOfB.status === 200 && workOfB.json.works.length === 0);
+    const workNoAuth = await req('GET', `/api/works/${workId}/file`);
+    check('未登录下载作品返回 401', workNoAuth.status === 401);
+    const delWork = await req('DELETE', `/api/works/${workId}`, null, tokenA);
+    check('删除作品', delWork.status === 200 && delWork.json.ok);
+    const worksAfter = await req('GET', '/api/works', null, tokenA);
+    check('删除后列表为空', worksAfter.json.works.length === 0);
+
+    console.log('\n[7] 断线清理');
     let sysOnB = null;
     b.on('chat:message', (m) => { if (m.system) sysOnB = m; });
     let removedOnB = null;

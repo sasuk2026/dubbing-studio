@@ -2,8 +2,11 @@
 
 /**
  * AudioKit —— 浏览器端音频工具箱
- * 录音（MediaRecorder + 电平表）、WAV 合成、ZIP 打包、下载
+ * 录音（MediaRecorder 压缩 / ScriptProcessor 无损 PCM + 电平表）、
+ * WAV/MP3 合成导出（支持语速与句间间隔）、ZIP 打包、下载
  */
+
+/* global lamejs */
 
 const AudioKit = (() => {
 
@@ -41,18 +44,36 @@ const AudioKit = (() => {
       this.analyser = null;
       this.audioCtx = null;
       this.meterRaf = null;
+      this.lossless = false;   // true = ScriptProcessor 捕获 PCM → WAV
+      this.pcmChunks = [];     // 无损模式：Float32Array 分片
+      this.processor = null;
+      this.silentGain = null;
       this.onTick = null;   // (ms) => void
       this.onLevel = null;  // (0..1) => void
       this.onStop = null;   // ({blob, duration, mime}) => void
     }
 
-    async start() {
+    async start(lossless = false) {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('当前浏览器不支持录音（需 HTTPS 或 localhost 环境）');
       }
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
+      this.lossless = !!lossless;
+      this.startedAt = Date.now();
+      if (this.lossless) {
+        this.startPcmCapture();
+      } else {
+        this.startMediaRecorder();
+      }
+      this.timer = setInterval(() => {
+        if (this.onTick) this.onTick(Date.now() - this.startedAt);
+      }, 200);
+      this.setupMeter();
+    }
+
+    startMediaRecorder() {
       const mime = pickMime();
       this.recorder = mime
         ? new MediaRecorder(this.stream, { mimeType: mime })
@@ -69,17 +90,32 @@ const AudioKit = (() => {
         if (this.onStop) this.onStop({ blob, duration, mime: type });
       };
       this.recorder.start(250);
-      this.startedAt = Date.now();
-      this.timer = setInterval(() => {
-        if (this.onTick) this.onTick(Date.now() - this.startedAt);
-      }, 200);
-      this.setupMeter();
+    }
+
+    // 无损模式：ScriptProcessorNode 直接捕获麦克风 PCM，停止时编码 16-bit WAV
+    startPcmCapture() {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!this.audioCtx) this.audioCtx = new Ctx();
+      const src = this.audioCtx.createMediaStreamSource(this.stream);
+      this.pcmChunks = [];
+      const processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (e) => {
+        if (!this.pcmChunks) return;
+        this.pcmChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      };
+      // 经静音增益接到 destination：保证 onaudioprocess 触发，且不外放啸叫
+      this.silentGain = this.audioCtx.createGain();
+      this.silentGain.gain.value = 0;
+      src.connect(processor);
+      processor.connect(this.silentGain);
+      this.silentGain.connect(this.audioCtx.destination);
+      this.processor = processor;
     }
 
     setupMeter() {
       try {
         const Ctx = window.AudioContext || window.webkitAudioContext;
-        this.audioCtx = new Ctx();
+        if (!this.audioCtx) this.audioCtx = new Ctx();
         const src = this.audioCtx.createMediaStreamSource(this.stream);
         this.analyser = this.audioCtx.createAnalyser();
         this.analyser.fftSize = 256;
@@ -99,7 +135,30 @@ const AudioKit = (() => {
     }
 
     stop() {
-      if (this.recorder && this.recorder.state !== 'inactive') this.recorder.stop();
+      if (this.recorder && this.recorder.state !== 'inactive') {
+        this.recorder.stop();
+      } else if (this.lossless) {
+        this.finishPcm();
+      }
+    }
+
+    finishPcm() {
+      const sr = this.audioCtx ? this.audioCtx.sampleRate : 44100;
+      const total = this.pcmChunks.reduce((s, c) => s + c.length, 0);
+      const duration = Math.max(1, Math.round((Date.now() - this.startedAt) / 1000));
+      if (!total) {
+        this.cleanup();
+        if (this.onStop) this.onStop({ blob: null, duration, mime: '', error: '未捕获到音频' });
+        return;
+      }
+      const pcm = new Float32Array(total);
+      let off = 0;
+      for (const c of this.pcmChunks) { pcm.set(c, off); off += c.length; }
+      const buf = this.audioCtx.createBuffer(1, total, sr);
+      buf.copyToChannel(pcm, 0);
+      const blob = audioBufferToWav(buf);
+      this.cleanup();
+      if (this.onStop) this.onStop({ blob, duration, mime: 'audio/wav' });
     }
 
     cancel() {
@@ -113,6 +172,13 @@ const AudioKit = (() => {
     cleanup() {
       if (this.timer) clearInterval(this.timer);
       if (this.meterRaf) cancelAnimationFrame(this.meterRaf);
+      if (this.processor) {
+        this.processor.onaudioprocess = null;
+        try { this.processor.disconnect(); } catch (e) { /* 忽略 */ }
+      }
+      if (this.silentGain) {
+        try { this.silentGain.disconnect(); } catch (e) { /* 忽略 */ }
+      }
       if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
       if (this.audioCtx && this.audioCtx.state !== 'closed') {
         this.audioCtx.close().catch(() => {});
@@ -120,7 +186,11 @@ const AudioKit = (() => {
       this.stream = null;
       this.recorder = null;
       this.analyser = null;
+      this.audioCtx = null;
+      this.processor = null;
+      this.silentGain = null;
       this.chunks = [];
+      this.pcmChunks = null;
     }
   }
 
@@ -164,7 +234,31 @@ const AudioKit = (() => {
   }
 
   /* ---------- 合成导出 ---------- */
-  async function mergeTakes(blobs, gapMs = 250) {
+
+  // 变速重采样：rate > 1 加速，< 1 减速
+  async function applySpeed(buf, sr, rate) {
+    if (Math.abs(rate - 1) < 0.001) return buf;
+    const outLen = Math.max(1, Math.ceil(buf.length / rate));
+    const oc = new OfflineAudioContext(buf.numberOfChannels, outLen, sr);
+    const src = oc.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+    src.connect(oc.destination);
+    src.start(0);
+    return oc.startRendering();
+  }
+
+  /**
+   * 合成多条录音
+   * @param blobs 音频 Blob 数组（按台词顺序）
+   * @param opts { speed: 语速倍率 0.5-2, gapMs: 句间间隔毫秒, format: 'mp3'|'wav', kbps: MP3 码率 }
+   * @returns {blob, ext, duration}
+   */
+  async function mergeTakes(blobs, opts = {}) {
+    const speed = Math.min(2, Math.max(0.5, Number(opts.speed) || 1));
+    const gapMs = Math.min(5000, Math.max(0, Number(opts.gapMs) ?? 250));
+    const format = opts.format === 'wav' ? 'wav' : 'mp3';
+    const kbps = Math.min(320, Math.max(64, Number(opts.kbps) || 192));
     const Ctx = window.AudioContext || window.webkitAudioContext;
     const ctx = new Ctx();
     try {
@@ -174,15 +268,19 @@ const AudioKit = (() => {
         decoded.push(await ctx.decodeAudioData(ab));
       }
       const sr = decoded[0].sampleRate;
+      // 统一采样率 + 应用语速
       const norm = [];
       for (const b of decoded) {
-        if (b.sampleRate === sr) { norm.push(b); continue; }
-        const oc = new OfflineAudioContext(b.numberOfChannels, Math.ceil(b.duration * sr), sr);
-        const src = oc.createBufferSource();
-        src.buffer = b;
-        src.connect(oc.destination);
-        src.start(0);
-        norm.push(await oc.startRendering());
+        let buf = b;
+        if (b.sampleRate !== sr) {
+          const oc = new OfflineAudioContext(b.numberOfChannels, Math.ceil(b.duration * sr), sr);
+          const src = oc.createBufferSource();
+          src.buffer = b;
+          src.connect(oc.destination);
+          src.start(0);
+          buf = await oc.startRendering();
+        }
+        norm.push(await applySpeed(buf, sr, speed));
       }
       const gap = Math.round((gapMs / 1000) * sr);
       const channels = Math.max.apply(null, norm.map((b) => b.numberOfChannels));
@@ -195,10 +293,45 @@ const AudioKit = (() => {
         }
         offset += b.length + gap;
       }
-      return audioBufferToWav(out);
+      const duration = out.duration;
+      if (format === 'mp3') {
+        return { blob: encodeMp3(out, kbps), ext: 'mp3', duration };
+      }
+      return { blob: audioBufferToWav(out), ext: 'wav', duration };
     } finally {
       if (ctx.state !== 'closed') ctx.close().catch(() => {});
     }
+  }
+
+  /* ---------- MP3 编码（lamejs） ---------- */
+  function encodeMp3(audioBuffer, kbps) {
+    if (typeof lamejs === 'undefined') {
+      throw new Error('MP3 编码器未加载，请刷新页面重试');
+    }
+    const numCh = Math.max(1, Math.min(2, audioBuffer.numberOfChannels));
+    const sr = audioBuffer.sampleRate;
+    const encoder = new lamejs.Mp3Encoder(numCh, sr, kbps);
+    // 交织 Int16 采样
+    const chans = [];
+    for (let c = 0; c < numCh; c++) chans.push(audioBuffer.getChannelData(Math.min(c, audioBuffer.numberOfChannels - 1)));
+    const frames = audioBuffer.length;
+    const samples = new Int16Array(frames * numCh);
+    for (let i = 0; i < frames; i++) {
+      for (let c = 0; c < numCh; c++) {
+        const s = Math.max(-1, Math.min(1, chans[c][i] || 0));
+        samples[i * numCh + c] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+    }
+    const chunkSize = 1152 * numCh;
+    const parts = [];
+    for (let i = 0; i < samples.length; i += chunkSize) {
+      const chunk = samples.subarray(i, Math.min(i + chunkSize, samples.length));
+      const buf = encoder.encodeBuffer(chunk);
+      if (buf.length > 0) parts.push(new Uint8Array(buf));
+    }
+    const end = encoder.flush();
+    if (end.length > 0) parts.push(new Uint8Array(end));
+    return new Blob(parts, { type: 'audio/mpeg' });
   }
 
   /* ---------- ZIP（store 模式） ---------- */

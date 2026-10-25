@@ -133,14 +133,23 @@ async function main() {
     const badgeA1 = await pageA.locator('.line-card').first().locator('.badge').textContent();
     check('A 实时看到小红已录制', badgeA1.includes('小红'), badgeA1);
 
-    console.log('\n[F] A 录制第二句（不同用户协作）');
+    console.log('\n[F] A 预设无损模式后录制第二句（不同用户协作）');
+    // 无损录音模式在合成设置中预设
+    await pageA.click('#btn-merge-settings');
+    await pageA.waitForSelector('#merge-settings:not([hidden])', { timeout: 5000 });
+    await pageA.check('#set-lossless');
+    check('合成设置可开启无损录音', await pageA.locator('#set-lossless').isChecked());
+    await pageA.click('#btn-merge-settings'); // 收起
     await pageA.locator('.line-card').nth(1).click();
     await pageA.waitForSelector('#dub-target:not([hidden])', { timeout: 5000 });
     await pageA.click('#btn-dub');
     await pageA.waitForSelector('#recorder-modal:not([hidden])', { timeout: 10000 });
+    check('录音弹窗展示无损模式已开启', await pageA.locator('#rec-lossless').isChecked());
     await sleep(1600);
     await pageA.click('#btn-rec-stop');
     await pageA.waitForSelector('#btn-rec-save:not([hidden])', { timeout: 10000 });
+    const recState = await pageA.textContent('#rec-state');
+    check('录音完成提示标注无损 WAV', recState.includes('无损 WAV'), recState);
     await pageA.click('#btn-rec-save');
     await pageA.waitForSelector('#recorder-modal[hidden]', { state: 'attached', timeout: 20000 });
     await sleep(800);
@@ -157,19 +166,33 @@ async function main() {
     const chatB = await pageB.locator('#chat-list').textContent();
     check('B 收到小明的聊天', chatB.includes('我录完第一句啦'));
 
-    console.log('\n[H] 导出');
+    console.log('\n[H] 合成设置 + MP3 导出');
+    // 打开合成设置，调整语速与间隔
+    await pageA.click('#btn-merge-settings');
+    await pageA.waitForSelector('#merge-settings:not([hidden])', { timeout: 5000 });
+    check('合成设置面板可打开', await pageA.locator('#merge-settings').isVisible());
+    await pageA.locator('#set-speed').fill('1.5');
+    await pageA.locator('#set-gap').fill('1000');
+    check('语速显示 1.50x', (await pageA.textContent('#set-speed-val')).trim() === '1.50x');
+    check('间隔显示 1 秒', (await pageA.textContent('#set-gap-val')).trim() === '1 秒');
+    await pageA.locator('#set-format').selectOption('mp3-192');
+    await pageA.click('#btn-merge-settings'); // 收起
+
     const [dl1] = await Promise.all([
-      pageA.waitForEvent('download', { timeout: 40000 }),
+      pageA.waitForEvent('download', { timeout: 60000 }),
       pageA.click('#btn-export-all'),
     ]);
-    const wavPath = path.join(DL_DIR, dl1.suggestedFilename());
-    await dl1.saveAs(wavPath);
-    const wavBuf = fs.readFileSync(wavPath);
+    const mp3Path = path.join(DL_DIR, dl1.suggestedFilename());
+    await dl1.saveAs(mp3Path);
+    const mp3Buf = fs.readFileSync(mp3Path);
+    const isMp3 = mp3Buf.toString('ascii', 0, 3) === 'ID3'
+      || (mp3Buf[0] === 0xff && (mp3Buf[1] & 0xe0) === 0xe0);
     check(
-      '合成导出 WAV 下载成功',
-      wavBuf.length > 1000 && wavBuf.toString('ascii', 0, 4) === 'RIFF' && wavBuf.toString('ascii', 8, 12) === 'WAVE',
-      `${wavBuf.length} bytes`
+      '合成导出 MP3 下载成功',
+      mp3Buf.length > 1000 && isMp3,
+      `${mp3Buf.length} bytes, 头: ${mp3Buf.slice(0, 3).toString('ascii')}`
     );
+    check('MP3 文件名以 .mp3 结尾', dl1.suggestedFilename().endsWith('.mp3'), dl1.suggestedFilename());
 
     const [dl2] = await Promise.all([
       pageA.waitForEvent('download', { timeout: 40000 }),
@@ -184,7 +207,29 @@ async function main() {
       `${zipBuf.length} bytes`
     );
 
-    console.log('\n[I] 语音聊天（WebRTC）');
+    console.log('\n[I] 存入作品库');
+    await pageA.click('#btn-save-work');
+    await pageA.waitForTimeout(6000);
+    await pageA.click('#btn-works-room');
+    await pageA.waitForSelector('#works-modal:not([hidden])', { timeout: 10000 });
+    await pageA.waitForSelector('.work-item', { timeout: 15000 });
+    const workCount = await pageA.locator('.work-item').count();
+    check('作品库出现 1 件合成作品', workCount === 1, `实际 ${workCount}`);
+    const workMeta = await pageA.locator('.work-item .work-meta').first().textContent();
+    check('作品元信息含 MP3 格式', /MP3/.test(workMeta), workMeta);
+    // 下载作品到本地
+    const [dlWork] = await Promise.all([
+      pageA.waitForEvent('download', { timeout: 30000 }),
+      pageA.locator('.work-item [data-act="download"]').first().click(),
+    ]);
+    const workPath = path.join(DL_DIR, dlWork.suggestedFilename());
+    await dlWork.saveAs(workPath);
+    const workBuf = fs.readFileSync(workPath);
+    check('作品可下载到本地', workBuf.length > 1000, `${workBuf.length} bytes`);
+    await pageA.click('#btn-works-close');
+    await pageA.waitForSelector('#works-modal[hidden]', { state: 'attached', timeout: 5000 });
+
+    console.log('\n[J] 语音聊天（WebRTC）');
     await pageA.click('.tab[data-tab="voice"]');
     await pageB.click('.tab[data-tab="voice"]');
     await pageA.click('#btn-voice-join');
@@ -199,7 +244,7 @@ async function main() {
     });
     check('WebRTC P2P 连接已建立', p2p.length >= 1 && p2p.some((s) => s === 'connected'), JSON.stringify(p2p));
 
-    console.log('\n[J] 退出登录');
+    console.log('\n[K] 退出登录');
     await pageA.click('#btn-leave');
     await pageA.waitForSelector('#lobby-panel:not([hidden])', { timeout: 8000 });
     check('退出房间回到大厅', await pageA.locator('#lobby-panel').isVisible());
@@ -209,7 +254,7 @@ async function main() {
     await pageA.goto(`${BASE}/r/${roomId}`, { waitUntil: 'networkidle' });
     check('退出后访问房间需重新登录', await pageA.locator('#auth-panel').isVisible());
 
-    console.log('\n[K] 控制台错误');
+    console.log('\n[L] 控制台错误');
     check('无 JS 报错', errorsA.length === 0, errorsA.slice(0, 3).join(' | '));
 
     console.log(`\n结果：${passed} 通过，${failed} 失败`);

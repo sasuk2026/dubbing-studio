@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="3">
+<meta name="app-version" content="4">
 <title>配音工坊 · 多人在线协作配音</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
-<link rel="stylesheet" href="/css/style.css?v=3">
+<link rel="stylesheet" href="/css/style.css?v=4">
 </head>
 <body>
 
@@ -48,6 +48,10 @@
         </div>
       </div>
 
+      <div class="home-actions">
+        <button id="btn-works" class="btn">🎞 我的作品库</button>
+      </div>
+
       <details class="script-setup">
         <summary>📜 粘贴台词本（可选，每行一句，支持「角色：台词」）</summary>
         <textarea id="script-input" placeholder="旁白：很久很久以前……&#10;小明：我们出发吧！&#10;小红：等等我～"></textarea>
@@ -74,6 +78,7 @@
       <div id="user-avatars" class="avatars"></div>
       <span id="header-account" class="chip" title="当前登录账号">👤 <b id="header-account-name"></b></span>
       <span id="conn-status" class="conn ok">连接中…</span>
+      <button id="btn-works-room" class="btn ghost sm" title="我的作品库">🎞 作品库</button>
       <button id="btn-leave" class="btn ghost sm">退出房间</button>
     </div>
   </header>
@@ -136,8 +141,33 @@
     </div>
     <div class="export-actions">
       <button id="btn-play-all" class="btn">▶ 连播</button>
-      <button id="btn-export-all" class="btn primary">⬇ 合成导出（WAV）</button>
+      <button id="btn-save-work" class="btn">💾 存入作品库</button>
+      <button id="btn-merge-settings" class="btn" title="合成设置">⚙ 合成设置</button>
+      <button id="btn-export-all" class="btn primary">⬇ 合成导出（MP3）</button>
       <button id="btn-export-parts" class="btn">⬇ 分段导出（ZIP）</button>
+    </div>
+    <div id="merge-settings" class="settings-pop" hidden>
+      <div class="settings-row">
+        <label>整体语速</label>
+        <input type="range" id="set-speed" min="0.5" max="2" step="0.05" value="1">
+        <span id="set-speed-val" class="settings-val">1.00x</span>
+      </div>
+      <div class="settings-row">
+        <label>每段间隔</label>
+        <input type="range" id="set-gap" min="0" max="3000" step="50" value="250">
+        <span id="set-gap-val" class="settings-val">0.25 秒</span>
+      </div>
+      <div class="settings-row">
+        <label>导出格式</label>
+        <select id="set-format">
+          <option value="mp3-320">MP3 · 320kbps（高品）</option>
+          <option value="mp3-192" selected>MP3 · 192kbps（推荐）</option>
+          <option value="mp3-128">MP3 · 128kbps（省流量）</option>
+          <option value="wav">WAV · 无损音质</option>
+        </select>
+      </div>
+      <label class="settings-check"><input type="checkbox" id="set-lossless"> 录音用无损模式（WAV 直录，文件较大）</label>
+      <p class="settings-tip">设置保存在本机浏览器，合成时自动应用</p>
     </div>
   </footer>
 </div>
@@ -149,6 +179,19 @@
     <h3>房间不存在或已解散</h3>
     <p>可能原因：房间号输错，或服务器更新后房间数据被重置<br>（免费版服务器不保留录音文件，重新部署会清空房间）</p>
     <button id="btn-missing-home" class="btn primary">返回首页</button>
+  </div>
+</div>
+
+<!-- ======== 我的作品库 ======== -->
+<div id="works-modal" class="modal-mask" hidden>
+  <div class="modal works-modal">
+    <div class="works-head">
+      <h3>🎞 我的作品库</h3>
+      <button id="btn-works-close" class="btn ghost sm">✕ 关闭</button>
+    </div>
+    <p class="works-tip">合成导出或单条录音都可以存入这里，随时在线试听、下载到本地。<br>⚠️ 免费版服务器重新部署会清空作品，重要作品请及时下载到本地。</p>
+    <div id="works-list" class="works-list"></div>
+    <div id="works-empty" class="empty" hidden>还没有作品——去配音室点「💾 存入作品库」保存第一段吧</div>
   </div>
 </div>
 
@@ -164,6 +207,7 @@
       <span id="rec-timer" class="rec-timer">00:00</span>
     </div>
     <canvas id="rec-meter" width="480" height="60"></canvas>
+    <label class="rec-lossless"><input type="checkbox" id="rec-lossless" disabled> 无损音质（WAV 直录，于「⚙ 合成设置」预设）</label>
     <audio id="rec-preview" controls hidden></audio>
     <div class="rec-actions">
       <button id="btn-rec-stop" class="btn primary" hidden>⏹ 停止</button>
@@ -177,8 +221,10 @@
 <div id="toasts" class="toasts"></div>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="/js/audio.js?v=3"></script>
-<script src="/js/voice.js?v=3"></script>
-<script src="/js/app.js?v=3"></script>
+<script src="/js/vendor/lame.min.js"></script>
+<script src="/js/audio.js?v=4"></script>
+<script src="/js/voice.js?v=4"></script>
+<script src="/js/fx.js?v=4"></script>
+<script src="/js/app.js?v=4"></script>
 </body>
 </html>

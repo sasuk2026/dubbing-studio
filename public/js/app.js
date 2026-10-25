@@ -70,6 +70,9 @@ const state = {
   audioEl: null,
   inviteDismissed: 0,
   authMode: 'login',
+  mergeSettings: null,  // {speed, gapMs, format, lossless}
+  lastMerged: null,     // {blob, ext, duration}
+  works: [],
 };
 
 /* ---------------- 网络工具 ---------------- */
@@ -435,6 +438,7 @@ function renderLines() {
         </div>
         <div class="line-actions">
           ${line.take ? '<button class="btn icon" data-action="play" title="播放录音">▶</button>' : ''}
+          ${line.take ? '<button class="btn ghost icon" data-action="save" title="存入我的作品库">🎞</button>' : ''}
           <button class="btn ghost icon" data-action="edit" title="编辑台词">✎</button>
           <button class="btn ghost icon" data-action="delete" title="删除台词">✕</button>
         </div>`;
@@ -473,6 +477,25 @@ on('btn-dub', 'click', () => {
   const line = state.room.lines.find((l) => l.id === state.selectedLineId);
   if (line) startRecording(line);
 });
+
+// 单条录音存入作品库
+async function saveTakeToWorks(line, btn) {
+  if (!line.take) return;
+  btn.disabled = true;
+  try {
+    const r = await authFetch(line.take.url);
+    if (!r.ok) throw new Error('录音下载失败');
+    const blob = await r.blob();
+    const ext = AudioKit.extFor(blob.type);
+    const speaker = line.speaker ? `${line.speaker}-` : '';
+    const safe = (speaker + line.text).replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 40);
+    await saveBlobToWorks(blob, ext, line.take.duration, safe);
+  } catch (e) {
+    toast('存入作品库失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 function renderUsers() {
   const wrap = $('user-avatars');
@@ -540,6 +563,7 @@ on('lines-list', 'click', async (e) => {
 
   const action = btn.dataset.action;
   if (action === 'play') playTake(line);
+  else if (action === 'save') saveTakeToWorks(line, btn);
   else if (action === 'edit') { state.editingLineId = lineId; renderLines(); }
   else if (action === 'cancel-edit') { state.editingLineId = null; renderLines(); }
   else if (action === 'save-edit') {
@@ -608,16 +632,27 @@ async function openRecorder(line) {
   $('btn-rec-stop').disabled = false;
   $('rec-state').textContent = '正在录音…';
   $('rec-timer').textContent = '00:00';
+  // 无损模式为预设项（在「⚙ 合成设置」中设置），录音弹窗内只读展示当前模式
+  const losslessCb = $('rec-lossless');
+  losslessCb.checked = !!(state.mergeSettings && state.mergeSettings.lossless);
+  losslessCb.disabled = true;
+  losslessCb.title = '录音模式在「⚙ 合成设置」中预设';
   modal.hidden = false;
 
   const rec = new AudioKit.TakeRecorder();
   state.rec = { lineId: line.id, rec, blob: null, duration: 0 };
   rec.onTick = (ms) => { $('rec-timer').textContent = AudioKit.fmtTime(ms / 1000); };
   rec.onLevel = (lv) => drawMeter(lv);
-  rec.onStop = ({ blob, duration }) => {
+  rec.onStop = ({ blob, duration, error }) => {
+    if (!blob) {
+      $('rec-state').textContent = error || '录音失败';
+      toast(error || '录音失败，请重试', 'error');
+      return;
+    }
     state.rec.blob = blob;
     state.rec.duration = duration;
-    $('rec-state').textContent = `录音完成（${AudioKit.fmtTime(duration)}），可试听或保存`;
+    const losslessTag = state.rec.rec.lossless ? ' · 无损 WAV' : '';
+    $('rec-state').textContent = `录音完成（${AudioKit.fmtTime(duration)}${losslessTag}），可试听或保存`;
     $('rec-timer').textContent = AudioKit.fmtTime(duration);
     $('btn-rec-stop').hidden = true;
     $('btn-rec-save').hidden = false;
@@ -631,7 +666,7 @@ async function openRecorder(line) {
   };
 
   try {
-    await rec.start();
+    await rec.start($('rec-lossless').checked);
   } catch (e) {
     modal.hidden = true;
     state.rec = null;
@@ -648,14 +683,39 @@ function drawMeter(level) {
   const w = cv.width;
   const h = cv.height;
   ctx.clearRect(0, 0, w, h);
-  const bars = 28;
-  const bw = w / bars - 2;
+  const bars = 32;
+  const gap = 3;
+  const bw = (w - gap * (bars - 1)) / bars;
+  const grad = ctx.createLinearGradient(0, h, 0, 0);
+  grad.addColorStop(0, '#3ecf8e');
+  grad.addColorStop(0.55, '#6c8cff');
+  grad.addColorStop(1, '#c084fc');
   for (let i = 0; i < bars; i++) {
-    const t = i / bars;
-    const v = Math.max(0.05, level * (0.55 + 0.45 * Math.sin(t * Math.PI)) * (1 - t * 0.35));
-    const bh = Math.max(3, v * (h - 8));
-    ctx.fillStyle = level > 0.02 ? '#6c8cff' : '#2a3040';
-    ctx.fillRect(i * (bw + 2), h - bh - 4, bw, bh);
+    const t = i / (bars - 1);
+    // 中间高两端低的钟形分布 + 邻柱衰减，形成立体声浪感
+    const bell = 0.35 + 0.65 * Math.sin(t * Math.PI);
+    const jitter = 0.75 + 0.25 * Math.sin(i * 12.9898 + level * 90);
+    const v = level <= 0.02 ? 0.04 : Math.min(1, level * bell * jitter * 1.6);
+    const bh = Math.max(3, v * (h * 0.72));
+    const x = i * (bw + gap);
+    const y = h * 0.86 - bh;
+    ctx.fillStyle = level > 0.02 ? grad : '#2a3040';
+    // 圆角柱体
+    const r = Math.min(bw / 2, 3);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + bw, y, x + bw, y + bh, r);
+    ctx.arcTo(x + bw, y + bh, x, y + bh, r);
+    ctx.arcTo(x, y + bh, x, y, r);
+    ctx.arcTo(x, y, x + bw, y, r);
+    ctx.closePath();
+    ctx.fill();
+    // 倒影
+    ctx.globalAlpha = 0.18;
+    ctx.beginPath();
+    ctx.ellipse(x + bw / 2, h * 0.9, bw / 2, bh * 0.16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -758,23 +818,102 @@ function stopPlayAll() {
 
 /* ---------------- 导出 ---------------- */
 
-on('btn-export-all', 'click', async () => {
+// 读取合成设置（语速 / 间隔 / 格式），持久化在本机
+function loadMergeSettings() {
+  try {
+    const s = JSON.parse(store.get('dub_merge_settings') || '{}');
+    return {
+      speed: Math.min(2, Math.max(0.5, Number(s.speed) || 1)),
+      gapMs: Math.min(3000, Math.max(0, Number(s.gapMs) ?? 250)),
+      format: ['mp3-320', 'mp3-192', 'mp3-128', 'wav'].includes(s.format) ? s.format : 'mp3-192',
+      lossless: !!s.lossless,
+    };
+  } catch (e) {
+    return { speed: 1, gapMs: 250, format: 'mp3-192', lossless: false };
+  }
+}
+
+function saveMergeSettings() {
+  store.set('dub_merge_settings', JSON.stringify(state.mergeSettings));
+}
+
+function mergeOpts() {
+  const s = state.mergeSettings;
+  if (s.format === 'wav') return { speed: s.speed, gapMs: s.gapMs, format: 'wav' };
+  const kbps = Number(s.format.split('-')[1]) || 192;
+  return { speed: s.speed, gapMs: s.gapMs, format: 'mp3', kbps };
+}
+
+function fmtGap(ms) {
+  return ms < 1000 ? `${ms} 毫秒` : `${(ms / 1000).toFixed(2).replace(/\.?0+$/, '')} 秒`;
+}
+
+function initMergeSettingsUI() {
+  const pop = $('merge-settings');
+  const speed = $('set-speed');
+  const gap = $('set-gap');
+  const format = $('set-format');
+  const lossless = $('set-lossless');
+  speed.value = String(state.mergeSettings.speed);
+  gap.value = String(state.mergeSettings.gapMs);
+  format.value = state.mergeSettings.format;
+  lossless.checked = state.mergeSettings.lossless;
+  $('set-speed-val').textContent = `${Number(state.mergeSettings.speed).toFixed(2)}x`;
+  $('set-gap-val').textContent = fmtGap(state.mergeSettings.gapMs);
+
+  speed.addEventListener('input', () => {
+    state.mergeSettings.speed = Number(speed.value);
+    $('set-speed-val').textContent = `${state.mergeSettings.speed.toFixed(2)}x`;
+    saveMergeSettings();
+  });
+  gap.addEventListener('input', () => {
+    state.mergeSettings.gapMs = Number(gap.value);
+    $('set-gap-val').textContent = fmtGap(state.mergeSettings.gapMs);
+    saveMergeSettings();
+  });
+  format.addEventListener('change', () => {
+    state.mergeSettings.format = format.value;
+    saveMergeSettings();
+  });
+  lossless.addEventListener('change', () => {
+    state.mergeSettings.lossless = lossless.checked;
+    saveMergeSettings();
+  });
+
+  on('btn-merge-settings', 'click', (e) => {
+    e.stopPropagation();
+    pop.hidden = !pop.hidden;
+  });
+  // 点击面板外收起
+  document.addEventListener('click', (e) => {
+    if (pop.hidden) return;
+    if (!pop.contains(e.target) && e.target.id !== 'btn-merge-settings') pop.hidden = true;
+  });
+}
+
+// 下载全部已录台词并合成（按当前设置）
+async function buildMerge() {
   const lines = state.room.lines.filter((l) => l.take);
-  if (!lines.length) return toast('还没有已录制的台词', 'warn');
+  if (!lines.length) throw new Error('还没有已录制的台词');
+  const blobs = [];
+  for (let i = 0; i < lines.length; i++) {
+    toast(`正在解码第 ${i + 1}/${lines.length} 条…`, 'info', 1500);
+    const r = await authFetch(lines[i].take.url);
+    if (!r.ok) throw new Error(`第 ${i + 1} 条录音下载失败`);
+    blobs.push(await r.blob());
+  }
+  return AudioKit.mergeTakes(blobs, mergeOpts());
+}
+
+on('btn-export-all', 'click', async () => {
   const btn = $('btn-export-all');
   btn.disabled = true;
   try {
-    const blobs = [];
-    for (let i = 0; i < lines.length; i++) {
-      toast(`正在解码第 ${i + 1}/${lines.length} 条…`, 'info', 1500);
-      const r = await authFetch(lines[i].take.url);
-      if (!r.ok) throw new Error(`第 ${i + 1} 条录音下载失败`);
-      blobs.push(await r.blob());
-    }
-    const wav = await AudioKit.mergeTakes(blobs, 300);
-    const name = `${state.room.name}-配音合成-${new Date().toISOString().slice(0, 10)}.wav`;
-    AudioKit.downloadBlob(wav, name);
-    toast('合成导出完成 🎉', 'ok');
+    const { blob, ext, duration } = await buildMerge();
+    state.lastMerged = { blob, ext, duration };
+    const name = `${state.room.name}-配音合成-${new Date().toISOString().slice(0, 10)}.${ext}`;
+    AudioKit.downloadBlob(blob, name);
+    toast(`合成导出完成（${ext.toUpperCase()}，${AudioKit.fmtTime(duration)}）🎉 可点「💾 存入作品库」保存`, 'ok', 5000);
   } catch (e) {
     toast('合成导出失败：' + e.message, 'error');
   } finally {
@@ -809,7 +948,116 @@ on('btn-export-parts', 'click', async () => {
   }
 });
 
-/* ---------------- 聊天 ---------------- */
+/* ---------------- 个人作品库 ---------------- */
+
+async function openWorks() {
+  $('works-modal').hidden = false;
+  $('works-list').innerHTML = '<div class="empty">加载中…</div>';
+  $('works-empty').hidden = true;
+  const d = await api('/api/works', 'GET');
+  state.works = (d && d.works) || [];
+  renderWorks();
+}
+
+function renderWorks() {
+  const list = $('works-list');
+  list.innerHTML = '';
+  $('works-empty').hidden = state.works.length > 0;
+  state.works.forEach((w) => {
+    const item = document.createElement('div');
+    item.className = 'work-item';
+    const sizeKB = Math.max(1, Math.round(w.size / 1024));
+    const date = new Date(w.createdAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    item.innerHTML = `
+      <div class="work-info">
+        <div class="work-name" title="${esc(w.name)}">${esc(w.name)}</div>
+        <div class="work-meta">${w.ext.toUpperCase()} · ${AudioKit.fmtTime(w.duration)} · ${sizeKB} KB · ${date}</div>
+      </div>
+      <div class="work-actions">
+        <button class="btn sm" data-act="play">▶ 试听</button>
+        <button class="btn sm" data-act="download">⬇ 下载</button>
+        <button class="btn ghost sm" data-act="delete">🗑</button>
+      </div>`;
+    item.querySelector('[data-act="play"]').addEventListener('click', () => {
+      const audio = item.querySelector('audio');
+      if (audio) {
+        if (audio.paused) audio.play().catch(() => toast('播放失败', 'error'));
+        else audio.pause();
+        return;
+      }
+      const el = new Audio(w.url);
+      el.controls = true;
+      el.className = 'work-audio';
+      el.onplay = () => item.querySelector('[data-act="play"]').textContent = '⏸ 暂停';
+      el.onpause = () => item.querySelector('[data-act="play"]').textContent = '▶ 试听';
+      item.appendChild(el);
+      el.play().catch(() => toast('播放失败', 'error'));
+    });
+    item.querySelector('[data-act="download"]').addEventListener('click', async () => {
+      const btn2 = item.querySelector('[data-act="download"]');
+      btn2.disabled = true;
+      btn2.textContent = '下载中…';
+      try {
+        const r = await authFetch(w.url);
+        if (!r.ok) throw new Error('下载失败');
+        const blob = await r.blob();
+        AudioKit.downloadBlob(blob, `${w.name}.${w.ext}`);
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        btn2.disabled = false;
+        btn2.textContent = '⬇ 下载';
+      }
+    });
+    item.querySelector('[data-act="delete"]').addEventListener('click', async () => {
+      if (!confirm(`删除作品「${w.name}」？此操作不可恢复`)) return;
+      const d = await api(`/api/works/${w.id}`, 'DELETE');
+      if (d && d.ok) {
+        state.works = state.works.filter((x) => x.id !== w.id);
+        renderWorks();
+        toast('已删除', 'info');
+      }
+    });
+    list.appendChild(item);
+  });
+}
+
+async function saveBlobToWorks(blob, ext, duration, name) {
+  const b64 = await AudioKit.blobToBase64(blob);
+  const mime = blob.type || (ext === 'mp3' ? 'audio/mpeg' : 'audio/wav');
+  const d = await api('/api/works', 'POST', { name, duration, mime, data: b64 });
+  if (d && d.work) {
+    toast(`已存入作品库：${d.work.name} 🎞`, 'ok');
+    return d.work;
+  }
+  throw new Error((d && d.error) || '保存失败');
+}
+
+on('btn-save-work', 'click', async () => {
+  if (!state.room) return;
+  const btn = $('btn-save-work');
+  btn.disabled = true;
+  btn.textContent = '合成中…';
+  try {
+    let merged = state.lastMerged;
+    if (!merged) merged = await buildMerge();
+    state.lastMerged = merged;
+    const date = new Date().toISOString().slice(0, 10);
+    await saveBlobToWorks(merged.blob, merged.ext, Math.round(merged.duration), `${state.room.name}-${date}`);
+  } catch (e) {
+    toast('存入作品库失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 存入作品库';
+  }
+});
+
+on('btn-works', 'click', openWorks);
+on('btn-works-room', 'click', openWorks);
+on('btn-works-close', 'click', () => { $('works-modal').hidden = true; });
+$('works-modal').addEventListener('click', (e) => {
+  if (e.target === $('works-modal')) $('works-modal').hidden = true;
+});
 
 on('chat-form', 'submit', (e) => {
   e.preventDefault();
@@ -941,7 +1189,7 @@ on('btn-missing-home', 'click', () => {
 // 版本自检：若浏览器拿到的是旧版 HTML（如缓存未过期），与新版 JS 组合会导致
 // 元素缺失、脚本失效。检测到版本不匹配时强制刷新（带防循环保护）。
 (function versionGuard() {
-  const APP_VERSION = '3';
+  const APP_VERSION = '4';
   const meta = document.querySelector('meta[name="app-version"]');
   if (meta && meta.content !== APP_VERSION) {
     try {
@@ -974,8 +1222,10 @@ window.addEventListener('unhandledrejection', (e) => {
 
 (async function boot() {
   try {
+    state.mergeSettings = loadMergeSettings();
     initAuthUI();
     initLobbyUI();
+    initMergeSettingsUI();
 
     const roomFromUrl = (() => {
       const m = location.pathname.match(/^\/r\/([A-Za-z0-9]{3,12})$/);

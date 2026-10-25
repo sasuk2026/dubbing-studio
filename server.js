@@ -22,9 +22,11 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const TAKES_DIR = path.join(DATA_DIR, 'takes');
+const WORKS_DIR = path.join(DATA_DIR, 'works');
 const MAX_TAKE_MB = 20;
 
 fs.mkdirSync(TAKES_DIR, { recursive: true });
+fs.mkdirSync(WORKS_DIR, { recursive: true });
 
 const app = express();
 const server = http.createServer(app);
@@ -238,13 +240,16 @@ function createRoom({ name } = {}) {
 
 function takeExt(mime) {
   if (!mime) return 'webm';
+  if (mime.includes('mpeg') || mime.includes('mp3')) return 'mp3';
   if (mime.includes('mp4') || mime.includes('aac')) return 'm4a';
   if (mime.includes('ogg')) return 'ogg';
   if (mime.includes('wav')) return 'wav';
   return 'webm';
 }
 
-const MIME_BY_EXT = { webm: 'audio/webm', m4a: 'audio/mp4', ogg: 'audio/ogg', wav: 'audio/wav' };
+const MIME_BY_EXT = {
+  webm: 'audio/webm', m4a: 'audio/mp4', ogg: 'audio/ogg', wav: 'audio/wav', mp3: 'audio/mpeg',
+};
 
 function roomState(room) {
   return {
@@ -474,6 +479,90 @@ api.get('/rooms/:roomId/take/:lineId', (req, res) => {
 });
 
 app.use('/api', authRequired, api);
+
+/* ================= 个人作品库（需登录） ================= */
+
+function worksDirOf(userId) {
+  const dir = path.join(WORKS_DIR, userId);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function worksIndexOf(userId) {
+  const file = path.join(WORKS_DIR, userId, 'index.json');
+  try {
+    const arr = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveWorksIndex(userId, list) {
+  fs.writeFileSync(path.join(WORKS_DIR, userId, 'index.json'), JSON.stringify(list));
+}
+
+// 我的作品列表
+app.get('/api/works', (req, res) => {
+  const list = worksIndexOf(req.account.id)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((w) => ({
+      id: w.id, name: w.name, ext: w.ext, mime: w.mime,
+      size: w.size, duration: w.duration, createdAt: w.createdAt,
+      url: `/api/works/${w.id}/file`,
+    }));
+  res.json({ works: list });
+});
+
+// 保存作品（合成结果或单条录音）
+app.post('/api/works', (req, res) => {
+  const account = req.account;
+  const { name, duration, mime, data } = req.body || {};
+  if (!data || typeof data !== 'string') return res.status(400).json({ error: '缺少音频数据' });
+  const buf = Buffer.from(data, 'base64');
+  if (!buf.length || buf.length > MAX_TAKE_MB * 1024 * 1024) {
+    return res.status(400).json({ error: `音频大小超出限制（最大 ${MAX_TAKE_MB}MB）` });
+  }
+  const ext = takeExt(mime);
+  const workId = crypto.randomUUID();
+  const dir = worksDirOf(account.id);
+  fs.writeFileSync(path.join(dir, `${workId}.${ext}`), buf);
+  const list = worksIndexOf(account.id);
+  const work = {
+    id: workId,
+    name: String(name || '未命名作品').slice(0, 60),
+    ext,
+    mime: mime || MIME_BY_EXT[ext],
+    size: buf.length,
+    duration: Math.round(Number(duration) || 0),
+    createdAt: Date.now(),
+  };
+  list.push(work);
+  saveWorksIndex(account.id, list);
+  res.json({ work: { ...work, url: `/api/works/${work.id}/file` } });
+});
+
+// 下载作品音频
+app.get('/api/works/:workId/file', (req, res) => {
+  const work = worksIndexOf(req.account.id).find((w) => w.id === req.params.workId);
+  if (!work) return res.status(404).json({ error: '作品不存在' });
+  const file = path.join(WORKS_DIR, req.account.id, `${work.id}.${work.ext}`);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: '作品文件缺失' });
+  res.setHeader('Content-Type', MIME_BY_EXT[work.ext] || 'application/octet-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(file);
+});
+
+// 删除作品
+app.delete('/api/works/:workId', (req, res) => {
+  const dir = path.join(WORKS_DIR, req.account.id);
+  const list = worksIndexOf(req.account.id);
+  const work = list.find((w) => w.id === req.params.workId);
+  if (!work) return res.status(404).json({ error: '作品不存在' });
+  try { fs.unlinkSync(path.join(dir, `${work.id}.${work.ext}`)); } catch (e) { /* 忽略 */ }
+  saveWorksIndex(req.account.id, list.filter((w) => w.id !== work.id));
+  res.json({ ok: true });
+});
 
 app.get('/healthz', (req, res) => {
   res.json({ ok: true, rooms: rooms.size, users: users.size, uptime: Math.round(process.uptime()) });
