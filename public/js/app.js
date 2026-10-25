@@ -8,7 +8,28 @@ const esc = (s) =>
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
 
+// 安全事件绑定：元素缺失时跳过而非抛异常（防止单个元素问题拖垮整个脚本）
+function on(id, evt, fn) {
+  const el = $(id);
+  if (el) el.addEventListener(evt, fn);
+}
+
 const LS_TOKEN = 'dub_token';
+
+// 安全存储封装：Safari 隐私模式 / 禁用 DOM 存储的浏览器访问 localStorage 会抛异常，
+// 若在顶层直接调用会导致整个脚本加载失败（所有按钮失灵）。统一 try/catch 兜底。
+const store = {
+  get(key) {
+    try { return window.localStorage.getItem(key); } catch (e) { return null; }
+  },
+  set(key, val) {
+    try { window.localStorage.setItem(key, val); return true; } catch (e) { return false; }
+  },
+  remove(key) {
+    try { window.localStorage.removeItem(key); } catch (e) { /* 忽略 */ }
+  },
+};
+
 const SAMPLE_SCRIPT = [
   '旁白：夜幕降临，小镇的灯火依次亮起。',
   '小明：终于放学啦！今天作业好多啊。',
@@ -34,7 +55,7 @@ function toast(msg, type = 'info', ms = 3200) {
 /* ---------------- 全局状态 ---------------- */
 
 const state = {
-  token: localStorage.getItem(LS_TOKEN) || '',
+  token: store.get(LS_TOKEN) || '',
   account: null,    // {id, username, color}
   roomId: null,
   room: null,       // {id, name, lines[], chat[]}
@@ -57,13 +78,20 @@ async function api(url, method, body, opts = {}) {
   const headers = {};
   if (body) headers['Content-Type'] = 'application/json';
   if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+  // 免费服务冷启动时首请求可能很慢，默认 60s 超时，避免"点了没反应"
+  const timeoutMs = opts.timeout || 60000;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const r = await fetch(url, {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
     });
-    if (r.status === 401) {
+    // 登录/注册接口自身的 401 是"凭据错误"，不应触发会话过期流程
+    const isAuthEndpoint = url.startsWith('/api/auth/');
+    if (r.status === 401 && !isAuthEndpoint) {
       handleAuthExpired(opts.silent);
       return null;
     }
@@ -71,8 +99,15 @@ async function api(url, method, body, opts = {}) {
     if (d.error && !opts.silent) toast(d.error, 'error');
     return d;
   } catch (e) {
-    if (!opts.silent) toast('网络错误，请稍后重试', 'error');
+    if (e.name === 'AbortError') {
+      // 超时必须反馈，不受 silent 限制——这是"点了没反应"的主要嫌疑
+      toast('服务响应超时（免费服务唤醒需要 30-60 秒），请再试一次', 'error', 6000);
+    } else if (!opts.silent) {
+      toast('网络错误，请稍后重试', 'error');
+    }
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -86,6 +121,7 @@ function authFetch(url) {
 
 function showAuthError(msg) {
   const el = $('auth-error');
+  if (!el) return;
   el.textContent = msg;
   el.hidden = !msg;
 }
@@ -109,7 +145,12 @@ function showLobby() {
 function setAuthMode(mode) {
   state.authMode = mode;
   document.querySelectorAll('.auth-tab').forEach((t) => t.classList.toggle('active', t.dataset.auth === mode));
-  $('btn-auth-submit').textContent = mode === 'login' ? '登录' : '注册并登录';
+  const btn = $('btn-auth-submit');
+  if (btn) {
+    btn.textContent = mode === 'login' ? '登录' : '注册并登录';
+    btn.classList.toggle('register-mode', mode === 'register');
+  }
+  $('auth-panel').classList.toggle('mode-register', mode === 'register');
   showAuthError('');
 }
 
@@ -120,20 +161,25 @@ async function submitAuth() {
   if (!username) return showAuthError('请输入用户名');
   if (!password) return showAuthError('请输入密码');
   const btn = $('btn-auth-submit');
+  const isLogin = state.authMode === 'login';
+  const originalText = btn.textContent;
   btn.disabled = true;
-  const url = state.authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
-  const d = await api(url, 'POST', { username, password }, { silent: true });
+  btn.classList.add('loading');
+  btn.textContent = isLogin ? '登录中…' : '注册中…';
+  const d = await api(`/api/auth/${isLogin ? 'login' : 'register'}`, 'POST', { username, password }, { silent: true });
   btn.disabled = false;
+  btn.classList.remove('loading');
+  btn.textContent = originalText;
   if (d && d.token && d.user) {
     state.token = d.token;
     state.account = d.user;
-    localStorage.setItem(LS_TOKEN, d.token);
+    store.set(LS_TOKEN, d.token);
     $('auth-password').value = '';
     showLobby();
-    toast(`${state.authMode === 'login' ? '欢迎回来' : '注册成功，欢迎加入'}，${d.user.username}`, 'ok');
+    toast(`${isLogin ? '欢迎回来' : '注册成功，欢迎加入'}，${d.user.username}`, 'ok');
     maybeAutoEnterRoom();
   } else {
-    showAuthError((d && d.error) || '操作失败，请重试');
+    showAuthError((d && d.error) || '操作失败，请重试（若等待很久没响应，可能是服务正在唤醒，稍等几秒再试）');
   }
 }
 
@@ -142,7 +188,7 @@ function handleAuthExpired(silent) {
   cleanupRoom();
   state.token = '';
   state.account = null;
-  localStorage.removeItem(LS_TOKEN);
+  store.remove(LS_TOKEN);
   $('room-view').hidden = true;
   $('home-view').hidden = false;
   showAuth();
@@ -155,7 +201,7 @@ async function logout() {
   cleanupRoom();
   state.token = '';
   state.account = null;
-  localStorage.removeItem(LS_TOKEN);
+  store.remove(LS_TOKEN);
   $('room-view').hidden = true;
   $('home-view').hidden = false;
   history.pushState(null, '', '/');
@@ -172,20 +218,20 @@ function initAuthUI() {
   document.querySelectorAll('.auth-tab').forEach((tab) => {
     tab.addEventListener('click', () => setAuthMode(tab.dataset.auth));
   });
-  $('btn-auth-submit').addEventListener('click', submitAuth);
-  $('auth-password').addEventListener('keydown', (e) => {
+  on('btn-auth-submit', 'click', submitAuth);
+  on('auth-password', 'keydown', (e) => {
     if (e.key === 'Enter') submitAuth();
   });
-  $('auth-username').addEventListener('keydown', (e) => {
+  on('auth-username', 'keydown', (e) => {
     if (e.key === 'Enter') $('auth-password').focus();
   });
-  $('btn-logout').addEventListener('click', logout);
+  on('btn-logout', 'click', logout);
 }
 
 /* ---------------- 大厅 ---------------- */
 
 function initLobbyUI() {
-  $('btn-create').addEventListener('click', async () => {
+  on('btn-create', 'click', async () => {
     const d = await api('/api/rooms', 'POST', {
       name: `${state.account.username}的配音室`,
       script: $('script-input').value,
@@ -193,19 +239,22 @@ function initLobbyUI() {
     if (d && d.room) enterRoom(d.room.id);
   });
 
-  $('btn-join').addEventListener('click', () => {
+  on('btn-join', 'click', () => {
     const id = $('join-id').value.trim().toUpperCase();
     if (!/^[A-Z0-9]{4,10}$/.test(id)) return toast('房间号格式不正确（4-10 位字母数字）', 'warn');
     enterRoom(id);
   });
 
-  $('join-id').addEventListener('keydown', (e) => {
+  on('join-id', 'keydown', (e) => {
     if (e.key === 'Enter') $('btn-join').click();
   });
 
-  document.querySelector('[data-sample]').addEventListener('click', () => {
-    $('script-input').value = SAMPLE_SCRIPT;
-  });
+  const sampleBtn = document.querySelector('[data-sample]');
+  if (sampleBtn) {
+    sampleBtn.addEventListener('click', () => {
+      $('script-input').value = SAMPLE_SCRIPT;
+    });
+  }
 }
 
 /* ---------------- 进入配音室 ---------------- */
@@ -420,7 +469,7 @@ function renderDubZone() {
   $('btn-dub').textContent = line.take ? '↻ 重新配音' : '🎙 开始配音';
 }
 
-$('btn-dub').addEventListener('click', () => {
+on('btn-dub', 'click', () => {
   const line = state.room.lines.find((l) => l.id === state.selectedLineId);
   if (line) startRecording(line);
 });
@@ -475,7 +524,7 @@ function updateCounts() {
 
 /* ---------------- 台词操作 ---------------- */
 
-$('lines-list').addEventListener('click', async (e) => {
+on('lines-list', 'click', async (e) => {
   const card = e.target.closest('.line-card');
   if (!card || !state.room) return;
   const lineId = card.dataset.lineId;
@@ -508,7 +557,7 @@ $('lines-list').addEventListener('click', async (e) => {
   }
 });
 
-$('btn-add-line').addEventListener('click', () => {
+on('btn-add-line', 'click', () => {
   const wrap = $('lines-list');
   if ($('add-line-form')) return;
   const form = document.createElement('div');
@@ -616,11 +665,11 @@ function stopMeter() {
   ctx.clearRect(0, 0, cv.width, cv.height);
 }
 
-$('btn-rec-stop').addEventListener('click', () => {
+on('btn-rec-stop', 'click', () => {
   if (state.rec && state.rec.rec) state.rec.rec.stop();
 });
 
-$('btn-rec-retry').addEventListener('click', async () => {
+on('btn-rec-retry', 'click', async () => {
   const lineId = state.rec && state.rec.lineId;
   const line = state.room.lines.find((l) => l.id === lineId);
   if (!line) return;
@@ -629,14 +678,14 @@ $('btn-rec-retry').addEventListener('click', async () => {
   await openRecorder(line);
 });
 
-$('btn-rec-cancel').addEventListener('click', () => {
+on('btn-rec-cancel', 'click', () => {
   if (state.rec && state.rec.rec) state.rec.rec.cancel();
   state.rec = null;
   $('recorder-modal').hidden = true;
   stopMeter();
 });
 
-$('btn-rec-save').addEventListener('click', async () => {
+on('btn-rec-save', 'click', async () => {
   if (!state.rec || !state.rec.blob) return;
   const { lineId, blob, duration } = state.rec;
   const btn = $('btn-rec-save');
@@ -676,7 +725,7 @@ function playTake(line) {
   audio.play().catch(() => toast('播放失败', 'error'));
 }
 
-$('btn-play-all').addEventListener('click', () => {
+on('btn-play-all', 'click', () => {
   if (state.playAll) { stopPlayAll(); return; }
   const lines = state.room.lines.filter((l) => l.take);
   if (!lines.length) return toast('还没有已录制的台词', 'warn');
@@ -709,7 +758,7 @@ function stopPlayAll() {
 
 /* ---------------- 导出 ---------------- */
 
-$('btn-export-all').addEventListener('click', async () => {
+on('btn-export-all', 'click', async () => {
   const lines = state.room.lines.filter((l) => l.take);
   if (!lines.length) return toast('还没有已录制的台词', 'warn');
   const btn = $('btn-export-all');
@@ -733,7 +782,7 @@ $('btn-export-all').addEventListener('click', async () => {
   }
 });
 
-$('btn-export-parts').addEventListener('click', async () => {
+on('btn-export-parts', 'click', async () => {
   const lines = state.room.lines.filter((l) => l.take);
   if (!lines.length) return toast('还没有已录制的台词', 'warn');
   const btn = $('btn-export-parts');
@@ -762,7 +811,7 @@ $('btn-export-parts').addEventListener('click', async () => {
 
 /* ---------------- 聊天 ---------------- */
 
-$('chat-form').addEventListener('submit', (e) => {
+on('chat-form', 'submit', (e) => {
   e.preventDefault();
   const input = $('chat-input');
   const text = input.value.trim();
@@ -801,7 +850,7 @@ document.querySelectorAll('.tab').forEach((tab) => {
 
 /* ---------------- 语音 UI ---------------- */
 
-$('btn-voice-join').addEventListener('click', async () => {
+on('btn-voice-join', 'click', async () => {
   $('btn-voice-join').disabled = true;
   await state.voice.join();
   if (state.voice.joined) {
@@ -811,7 +860,7 @@ $('btn-voice-join').addEventListener('click', async () => {
   $('btn-voice-join').disabled = false;
 });
 
-$('btn-voice-leave').addEventListener('click', () => {
+on('btn-voice-leave', 'click', () => {
   state.voice.leave();
   state.speaking = {};
   $('btn-voice-join').hidden = false;
@@ -820,14 +869,14 @@ $('btn-voice-leave').addEventListener('click', () => {
   renderVoiceUsers();
 });
 
-$('btn-voice-mute').addEventListener('click', () => {
+on('btn-voice-mute', 'click', () => {
   const muted = state.voice.toggleMute();
   $('btn-voice-mute').textContent = muted ? '🔊 取消静音' : '🔇 静音';
 });
 
 /* ---------------- 邀请 ---------------- */
 
-$('btn-copy-invite').addEventListener('click', async () => {
+on('btn-copy-invite', 'click', async () => {
   const link = $('invite-link').value;
   try {
     await navigator.clipboard.writeText(link);
@@ -839,12 +888,12 @@ $('btn-copy-invite').addEventListener('click', async () => {
   }
 });
 
-$('btn-close-invite').addEventListener('click', () => {
+on('btn-close-invite', 'click', () => {
   state.inviteDismissed = state.users.length;
   $('invite-bar').hidden = true;
 });
 
-$('btn-copy-id').addEventListener('click', async () => {
+on('btn-copy-id', 'click', async () => {
   try {
     await navigator.clipboard.writeText(state.roomId);
     toast('房间号已复制：' + state.roomId, 'ok');
@@ -880,38 +929,60 @@ function leaveRoom() {
   }
 }
 
-$('btn-leave').addEventListener('click', leaveRoom);
+on('btn-leave', 'click', leaveRoom);
 
-$('btn-missing-home').addEventListener('click', () => {
+on('btn-missing-home', 'click', () => {
   $('room-missing').hidden = true;
   leaveRoom();
 });
 
 /* ---------------- 启动 ---------------- */
 
+// 全局兜底：任何未捕获错误都给出可见反馈，杜绝"点了没反应"式的静默失败
+window.addEventListener('error', (e) => {
+  console.error('全局错误:', e.error || e.message);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('未处理的 Promise 拒绝:', e.reason);
+});
+
+// 页面加载即唤醒服务（Render 免费版 15 分钟无访问会休眠）
+(function warmupService() {
+  const ping = () => fetch('/healthz').catch(() => {});
+  ping();
+  setInterval(ping, 4 * 60 * 1000); // 每 4 分钟保活一次
+})();
+
 (async function boot() {
-  initAuthUI();
-  initLobbyUI();
+  try {
+    initAuthUI();
+    initLobbyUI();
 
-  const roomFromUrl = (() => {
-    const m = location.pathname.match(/^\/r\/([A-Za-z0-9]{3,12})$/);
-    return m ? decodeURIComponent(m[1]).toUpperCase() : null;
-  })();
+    const roomFromUrl = (() => {
+      const m = location.pathname.match(/^\/r\/([A-Za-z0-9]{3,12})$/);
+      return m ? decodeURIComponent(m[1]).toUpperCase() : null;
+    })();
 
-  if (state.token) {
-    const d = await api('/api/auth/me', 'GET', null, { silent: true });
-    if (d && d.user) {
-      state.account = d.user;
-      showLobby();
-      if (roomFromUrl) enterRoom(roomFromUrl);
-      return;
+    if (state.token) {
+      const d = await api('/api/auth/me', 'GET', null, { silent: true });
+      if (d && d.user) {
+        state.account = d.user;
+        showLobby();
+        if (roomFromUrl) enterRoom(roomFromUrl);
+        return;
+      }
+      state.token = '';
+      store.remove(LS_TOKEN);
     }
-    state.token = '';
-    localStorage.removeItem(LS_TOKEN);
+    if (roomFromUrl) {
+      $('join-id').value = roomFromUrl;
+      showAuthError(`登录后即可进入配音室 ${roomFromUrl}`);
+    }
+    showAuth();
+  } catch (e) {
+    // 启动失败也必须让用户看到，而不是白屏/无反应
+    console.error('启动失败:', e);
+    showAuth();
+    showAuthError('页面加载出现问题，请刷新重试');
   }
-  if (roomFromUrl) {
-    $('join-id').value = roomFromUrl;
-    showAuthError(`登录后即可进入配音室 ${roomFromUrl}`);
-  }
-  showAuth();
 })();

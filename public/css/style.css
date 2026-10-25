@@ -40,6 +40,16 @@ body {
 .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 .btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); border: none; color: #fff; font-weight: 600; }
 .btn.ghost { background: transparent; }
+/* 注册模式：主按钮换色，让"当前在注册"一目了然 */
+.btn.primary.register-mode { background: linear-gradient(135deg, #22c55e, #16a34a); box-shadow: 0 0 18px rgba(34, 197, 94, .35); }
+/* 加载中：旋转指示 */
+.btn.loading { position: relative; color: transparent !important; pointer-events: none; }
+.btn.loading::after {
+  content: ''; position: absolute; inset: 0; margin: auto; width: 16px; height: 16px;
+  border: 2px solid rgba(255, 255, 255, .35); border-top-color: #fff; border-radius: 50%;
+  animation: btn-spin .7s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
 .btn.sm { padding: 5px 10px; font-size: 12px; }
 .btn.big { padding: 14px 22px; font-size: 15px; width: 100%; justify-content: center; }
 .btn.icon { padding: 5px 9px; }
