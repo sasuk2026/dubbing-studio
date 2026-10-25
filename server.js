@@ -31,7 +31,14 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 app.use(express.json({ limit: `${MAX_TAKE_MB + 5}mb` }));
-app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h', index: 'index.html' }));
+// 静态资源始终重新验证（no-cache）：避免浏览器缓存旧版 HTML/JS 组合，
+// 导致"新版 JS 找不到旧版 HTML 里的元素"而使整个页面脚本失效（按钮全部失灵）
+app.use(express.static(path.join(__dirname, 'public'), {
+  index: 'index.html',
+  setHeaders(res) {
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+  },
+}));
 
 /* ================= 账号系统 ================= */
 

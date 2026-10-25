@@ -938,6 +938,25 @@ on('btn-missing-home', 'click', () => {
 
 /* ---------------- 启动 ---------------- */
 
+// 版本自检：若浏览器拿到的是旧版 HTML（如缓存未过期），与新版 JS 组合会导致
+// 元素缺失、脚本失效。检测到版本不匹配时强制刷新（带防循环保护）。
+(function versionGuard() {
+  const APP_VERSION = '3';
+  const meta = document.querySelector('meta[name="app-version"]');
+  if (meta && meta.content !== APP_VERSION) {
+    try {
+      const last = Number(sessionStorage.getItem('dub_reload_ts') || 0);
+      if (Date.now() - last > 5000) {
+        sessionStorage.setItem('dub_reload_ts', String(Date.now()));
+        location.reload();
+        return;
+      }
+    } catch (e) { /* sessionStorage 不可用时直接刷新 */ }
+    location.reload();
+    return;
+  }
+})();
+
 // 全局兜底：任何未捕获错误都给出可见反馈，杜绝"点了没反应"式的静默失败
 window.addEventListener('error', (e) => {
   console.error('全局错误:', e.error || e.message);
