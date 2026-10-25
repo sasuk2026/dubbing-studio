@@ -15,26 +15,48 @@
     <div class="logo">🎬 配音工坊</div>
     <p class="tagline">多人实时协作配音 · 锁词录音 · 一键合成导出 · 语音 / 文字聊天</p>
 
-    <label>你的昵称</label>
-    <input id="nick-input" maxlength="12" placeholder="输入昵称，小伙伴们会看到你" autocomplete="off">
-
-    <div class="home-actions">
-      <button id="btn-create" class="btn primary">创建配音室</button>
-      <div class="join-box">
-        <input id="join-id" maxlength="10" placeholder="输入房间号" autocomplete="off">
-        <button id="btn-join" class="btn">加入</button>
+    <!-- 未登录：登录 / 注册 -->
+    <div id="auth-panel">
+      <div class="auth-tabs">
+        <button type="button" class="auth-tab active" data-auth="login">登录</button>
+        <button type="button" class="auth-tab" data-auth="register">注册</button>
       </div>
+      <label>用户名</label>
+      <input id="auth-username" maxlength="20" placeholder="2-20 位字母/数字/中文/下划线" autocomplete="username">
+      <label>密码</label>
+      <input id="auth-password" type="password" maxlength="64" placeholder="至少 6 位" autocomplete="current-password">
+      <div class="home-actions">
+        <button id="btn-auth-submit" class="btn primary">登录</button>
+      </div>
+      <p id="auth-error" class="auth-error" hidden></p>
     </div>
 
-    <details class="script-setup">
-      <summary>📜 粘贴台词本（可选，每行一句，支持「角色：台词」）</summary>
-      <textarea id="script-input" placeholder="旁白：很久很久以前……&#10;小明：我们出发吧！&#10;小红：等等我～"></textarea>
-      <button class="btn ghost sm sample-btn" data-sample type="button">载入示例台词</button>
-    </details>
+    <!-- 已登录：大厅 -->
+    <div id="lobby-panel" hidden>
+      <div class="account-bar">
+        <span class="avatar" id="account-avatar">?</span>
+        <span class="account-name">欢迎，<b id="account-name"></b></span>
+        <button id="btn-logout" class="btn ghost sm">退出登录</button>
+      </div>
+
+      <div class="home-actions">
+        <button id="btn-create" class="btn primary">创建配音室</button>
+        <div class="join-box">
+          <input id="join-id" maxlength="10" placeholder="输入房间号" autocomplete="off">
+          <button id="btn-join" class="btn">加入</button>
+        </div>
+      </div>
+
+      <details class="script-setup">
+        <summary>📜 粘贴台词本（可选，每行一句，支持「角色：台词」）</summary>
+        <textarea id="script-input" placeholder="旁白：很久很久以前……&#10;小明：我们出发吧！&#10;小红：等等我～"></textarea>
+        <button class="btn ghost sm sample-btn" data-sample type="button">载入示例台词</button>
+      </details>
+    </div>
 
     <div class="home-tip">
       💡 提示：录音与语音聊天需要麦克风权限，浏览器要求在 <b>HTTPS</b> 或 <b>localhost</b> 环境下使用。<br>
-      🎯 玩法：创建配音室 → 把邀请链接发给小伙伴 → 每人锁定自己要配的台词 → 逐段录音 → 一键合成导出成篇。
+      🎯 玩法：登录 → 创建配音室 → 把邀请链接发给小伙伴 → 每人锁定自己要配的台词 → 逐段录音 → 一键合成导出成篇。
     </div>
   </div>
 </div>
@@ -49,8 +71,9 @@
     </div>
     <div class="room-users">
       <div id="user-avatars" class="avatars"></div>
+      <span id="header-account" class="chip" title="当前登录账号">👤 <b id="header-account-name"></b></span>
       <span id="conn-status" class="conn ok">连接中…</span>
-      <button id="btn-leave" class="btn ghost sm">退出</button>
+      <button id="btn-leave" class="btn ghost sm">退出房间</button>
     </div>
   </header>
 

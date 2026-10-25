@@ -86,6 +86,23 @@ label { display: block; color: var(--muted); font-size: 12px; margin: 14px 0 6px
 }
 .home-tip b { color: var(--text); }
 
+/* ---------- 登录 / 注册 ---------- */
+.auth-tabs { display: flex; gap: 8px; margin-bottom: 6px; }
+.auth-tab {
+  flex: 1; padding: 10px; background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--muted); border-radius: 10px; cursor: pointer; font-size: 14px; font-family: inherit;
+}
+.auth-tab.active { color: var(--text); border-color: var(--accent); font-weight: 600; background: rgba(108, 140, 255, .12); }
+.auth-error { color: var(--red); font-size: 13px; margin-top: 12px; line-height: 1.5; }
+
+.account-bar {
+  display: flex; align-items: center; gap: 10px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; margin-bottom: 18px;
+}
+.account-bar .avatar { margin-left: 0; }
+.account-name { flex: 1; font-size: 14px; }
+.account-name b { color: #fff; }
+
 /* ---------- 配音室布局 ---------- */
 #room-view { display: flex; flex-direction: column; height: 100vh; }
 

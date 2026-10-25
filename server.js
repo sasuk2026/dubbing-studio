@@ -3,6 +3,7 @@
 /**
  * 配音工坊 · 服务端
  * Express + Socket.io
+ * - 账号系统（注册 / 登录 / 令牌会话）
  * - 配音室（房间）创建 / 加入 / 持久化
  * - 台词本增删改、台词锁定（含过期接管）
  * - 分段录音上传 / 下载
@@ -33,7 +34,160 @@ const io = new Server(server);
 app.use(express.json({ limit: `${MAX_TAKE_MB + 5}mb` }));
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h', index: 'index.html' }));
 
-/* ---------------- 房间存储 ---------------- */
+/* ================= 账号系统 ================= */
+
+const users = new Map();  // userId -> {id, username, salt, passHash, createdAt}
+const tokens = new Map(); // token -> {userId, at}
+
+const USERNAME_RE = /^[\u4e00-\u9fa5A-Za-z0-9_-]{2,20}$/;
+const USER_COLORS = ['#6c8cff', '#9b6cff', '#3ecf8e', '#ffc861', '#ff8a65', '#4dd0e1', '#f06292', '#aed581'];
+
+function colorFromId(id) {
+  let h = 0;
+  for (let i = 0; i < String(id).length; i++) h = (h * 31 + String(id).charCodeAt(i)) >>> 0;
+  return USER_COLORS[h % USER_COLORS.length];
+}
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(String(password), salt, 64).toString('hex');
+}
+
+function publicUser(u) {
+  return { id: u.id, username: u.username, color: colorFromId(u.id), createdAt: u.createdAt };
+}
+
+function resolveToken(token) {
+  if (!token) return null;
+  const entry = tokens.get(String(token));
+  if (!entry) return null;
+  return users.get(entry.userId) || null;
+}
+
+function issueToken(user) {
+  const token = crypto.randomBytes(24).toString('hex');
+  tokens.set(token, { userId: user.id, at: Date.now() });
+  persistUsersSoon();
+  return token;
+}
+
+let persistUsersTimer = null;
+
+function persistUsersSoon() {
+  if (persistUsersTimer) return;
+  persistUsersTimer = setTimeout(() => {
+    persistUsersTimer = null;
+    try {
+      const dump = {
+        accounts: [...users.values()].map((u) => ({
+          id: u.id, username: u.username, salt: u.salt, passHash: u.passHash, createdAt: u.createdAt,
+        })),
+        tokens: Object.fromEntries(tokens),
+      };
+      fs.writeFileSync(path.join(DATA_DIR, 'users.json'), JSON.stringify(dump));
+    } catch (e) {
+      console.error('[persist-users] 失败:', e.message);
+    }
+  }, 400);
+}
+
+function loadUsers() {
+  try {
+    const dump = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'users.json'), 'utf8'));
+    for (const a of dump.accounts || []) users.set(a.id, a);
+    for (const [t, v] of Object.entries(dump.tokens || {})) tokens.set(t, v);
+    if (users.size) console.log(`[init] 已恢复 ${users.size} 个账号`);
+  } catch (e) {
+    /* 首次启动无存档，忽略 */
+  }
+}
+
+loadUsers();
+
+function authRequired(req, res, next) {
+  const header = req.headers.authorization || '';
+  let token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token && req.headers.cookie) {
+    const m = req.headers.cookie.match(/(?:^|;\s*)dub_token=([^;]+)/);
+    if (m) token = decodeURIComponent(m[1]);
+  }
+  const account = resolveToken(token);
+  if (!account) return res.status(401).json({ error: '未登录或登录已过期' });
+  req.account = account;
+  next();
+}
+
+function setAuthCookie(res, token) {
+  res.cookie('dub_token', token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 30 * 24 * 3600 * 1000,
+    path: '/',
+  });
+}
+
+function clearAuthCookie(res) {
+  res.clearCookie('dub_token', { path: '/' });
+}
+
+const authRouter = express.Router();
+
+authRouter.post('/register', (req, res) => {
+  const username = String((req.body || {}).username || '').trim();
+  const password = String((req.body || {}).password || '');
+  if (!USERNAME_RE.test(username)) {
+    return res.status(400).json({ error: '用户名需为 2-20 位字母、数字、中文或下划线' });
+  }
+  if (password.length < 6 || password.length > 64) {
+    return res.status(400).json({ error: '密码长度需为 6-64 位' });
+  }
+  if ([...users.values()].some((u) => u.username === username)) {
+    return res.status(409).json({ error: '用户名已被注册，换一个试试' });
+  }
+  const salt = crypto.randomBytes(16).toString('hex');
+  const user = {
+    id: 'usr-' + crypto.randomBytes(8).toString('hex'),
+    username,
+    salt,
+    passHash: hashPassword(password, salt),
+    createdAt: Date.now(),
+  };
+  users.set(user.id, user);
+  persistUsersSoon();
+  const token = issueToken(user);
+  setAuthCookie(res, token);
+  res.json({ token, user: publicUser(user) });
+});
+
+authRouter.post('/login', (req, res) => {
+  const username = String((req.body || {}).username || '').trim();
+  const password = String((req.body || {}).password || '');
+  const user = [...users.values()].find((u) => u.username === username);
+  if (!user) return res.status(401).json({ error: '用户名或密码错误' });
+  const expected = Buffer.from(user.passHash, 'hex');
+  const actual = crypto.scryptSync(password, user.salt, 64);
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+    return res.status(401).json({ error: '用户名或密码错误' });
+  }
+  const token = issueToken(user);
+  setAuthCookie(res, token);
+  res.json({ token, user: publicUser(user) });
+});
+
+authRouter.post('/logout', authRequired, (req, res) => {
+  const header = req.headers.authorization || '';
+  tokens.delete(header.startsWith('Bearer ') ? header.slice(7) : '');
+  persistUsersSoon();
+  clearAuthCookie(res);
+  res.json({ ok: true });
+});
+
+authRouter.get('/me', authRequired, (req, res) => {
+  res.json({ user: publicUser(req.account) });
+});
+
+app.use('/api/auth', authRouter);
+
+/* ================= 房间存储 ================= */
 
 const rooms = new Map(); // roomId -> room
 
@@ -61,20 +215,13 @@ function parseScript(text) {
     });
 }
 
-function createRoom({ name, script } = {}) {
+function createRoom({ name } = {}) {
   const id = genRoomId();
-  const lines = parseScript(script).map((l) => ({
-    id: crypto.randomUUID(),
-    speaker: l.speaker,
-    text: l.text,
-    lockedBy: null,
-    take: null,
-  }));
   const room = {
     id,
     name: (name || '').toString().slice(0, 40) || `配音室 ${id}`,
     createdAt: Date.now(),
-    lines,
+    lines: [],
     chat: [],
     users: new Map(),
   };
@@ -136,7 +283,7 @@ function findLine(room, lineId) {
   return room ? room.lines.find((l) => l.id === lineId) : null;
 }
 
-/* ---------------- 持久化 ---------------- */
+/* ================= 持久化 ================= */
 
 let persistTimer = null;
 
@@ -183,13 +330,22 @@ function loadRooms() {
 
 loadRooms();
 
-/* ---------------- REST API ---------------- */
+/* ================= REST API（需登录） ================= */
 
 const api = express.Router();
 
 // 创建配音室（可粘贴台词本）
 api.post('/rooms', (req, res) => {
-  const room = createRoom(req.body || {});
+  const room = createRoom({ name: req.body && req.body.name });
+  const lines = parseScript(req.body && req.body.script).map((l) => ({
+    id: crypto.randomUUID(),
+    speaker: l.speaker,
+    text: l.text,
+    lockedBy: null,
+    take: null,
+  }));
+  room.lines = lines;
+  persistSoon();
   res.json({ room: roomState(room) });
 });
 
@@ -265,7 +421,8 @@ api.post('/rooms/:roomId/lines/:lineId/take', (req, res) => {
   const room = rooms.get(req.params.roomId);
   const line = findLine(room, req.params.lineId);
   if (!room || !line) return res.status(404).json({ error: '台词不存在' });
-  const { userId, userName, duration, mime, data } = req.body || {};
+  const { duration, mime, data } = req.body || {};
+  const account = req.account;
   if (!data || typeof data !== 'string') return res.status(400).json({ error: '缺少音频数据' });
   const buf = Buffer.from(data, 'base64');
   if (!buf.length || buf.length > MAX_TAKE_MB * 1024 * 1024) {
@@ -283,8 +440,8 @@ api.post('/rooms/:roomId/lines/:lineId/take', (req, res) => {
   fs.writeFileSync(path.join(dir, `${line.id}.${takeId}.${ext}`), buf);
   line.take = {
     id: takeId,
-    by: (userId || '').toString().slice(0, 40),
-    byName: (userName || '匿名').toString().slice(0, 20),
+    by: account.id,
+    byName: account.username,
     at: Date.now(),
     duration: Math.round(Number(duration) || 0),
     mime: mime || MIME_BY_EXT[ext],
@@ -313,10 +470,10 @@ api.get('/rooms/:roomId/take/:lineId', (req, res) => {
   res.sendFile(path.join(dir, file));
 });
 
-app.use('/api', api);
+app.use('/api', authRequired, api);
 
 app.get('/healthz', (req, res) => {
-  res.json({ ok: true, rooms: rooms.size, uptime: Math.round(process.uptime()) });
+  res.json({ ok: true, rooms: rooms.size, users: users.size, uptime: Math.round(process.uptime()) });
 });
 
 // SPA 路由：首页与配音室页
@@ -332,20 +489,25 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.message || '服务器错误' });
 });
 
-/* ---------------- WebSocket ---------------- */
+/* ================= WebSocket ================= */
 
 io.on('connection', (socket) => {
-  socket.on('room:join', ({ roomId, user } = {}) => {
+  socket.on('room:join', ({ roomId, token } = {}) => {
     const room = rooms.get(String(roomId || ''));
     if (!room) {
       socket.emit('room:error', '房间不存在或已解散');
       return;
     }
+    const account = resolveToken(token);
+    if (!account) {
+      socket.emit('auth:expired', '登录已过期，请重新登录');
+      return;
+    }
     const me = {
       sid: socket.id,
-      id: String((user && user.id) || socket.id).slice(0, 40),
-      name: String((user && user.name) || '').slice(0, 20) || '匿名用户',
-      color: String((user && user.color) || '#6c8cff').slice(0, 20),
+      id: account.id,
+      name: account.username,
+      color: colorFromId(account.id),
       voice: false,
       muted: false,
     };
@@ -459,7 +621,7 @@ io.on('connection', (socket) => {
     if (!me) return;
     room.users.delete(socket.id);
 
-    // 同一用户还有其他标签页在场，则不广播离开
+    // 同一账号还有其他标签页在场，则不广播离开
     const stillHere = [...room.users.values()].some((u) => u.id === me.id);
     if (!stillHere) {
       for (const line of room.lines) {

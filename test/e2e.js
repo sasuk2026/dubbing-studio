@@ -2,7 +2,8 @@
 
 /**
  * 浏览器端到端测试（Playwright + Chromium 虚拟麦克风）
- * 验证：建房/示例台词/双人在线/邀请条/台词锁定竞争/录音保存/实时同步/聊天/导出 WAV+ZIP/WebRTC 语音
+ * 验证：注册/登录、建房/示例台词、双人在线/邀请条、台词锁定竞争、
+ *       录音保存/实时同步、聊天、导出 WAV+ZIP、WebRTC 语音
  * 运行：NODE_PATH=$(npm root -g) node test/e2e.js
  */
 
@@ -31,6 +32,14 @@ function check(name, cond, extra = '') {
     failed += 1;
     console.log(`  ❌ ${name} ${extra}`);
   }
+}
+
+// 在页面中完成注册（自动登录）
+async function register(page, username, password) {
+  await page.click('.auth-tab[data-auth="register"]');
+  await page.fill('#auth-username', username);
+  await page.fill('#auth-password', password);
+  await page.click('#btn-auth-submit');
 }
 
 async function main() {
@@ -65,10 +74,17 @@ async function main() {
   });
 
   try {
-    console.log('\n[A] 首页与创建配音室');
+    console.log('\n[A] 注册账号');
     await pageA.goto(BASE, { waitUntil: 'networkidle' });
-    await pageA.fill('#nick-input', '小明');
-    await pageA.click('.script-setup summary'); // 展开台词本
+    check('未登录时展示登录/注册面板', await pageA.locator('#auth-panel').isVisible());
+    check('大厅被隐藏', !(await pageA.locator('#lobby-panel').isVisible()));
+    await register(pageA, '小明', 'pass1234');
+    await pageA.waitForSelector('#lobby-panel:not([hidden])', { timeout: 10000 });
+    check('注册后自动登录进入大厅', await pageA.locator('#lobby-panel').isVisible());
+    check('大厅显示账号名', (await pageA.textContent('#account-name')).includes('小明'));
+
+    console.log('\n[B] 创建配音室');
+    await pageA.click('.script-setup summary');
     await pageA.click('[data-sample]');
     const scriptVal = await pageA.inputValue('#script-input');
     check('载入示例台词', scriptVal.includes('图书馆'));
@@ -76,22 +92,24 @@ async function main() {
     await pageA.waitForSelector('#room-view:not([hidden])', { timeout: 10000 });
     const roomId = (await pageA.textContent('#room-id')).trim();
     check('进入配音室，房间号 6 位', /^[A-Z0-9]{6}$/.test(roomId), roomId);
+    check('房间头部显示登录账号', (await pageA.textContent('#header-account-name')).includes('小明'));
 
     await pageA.waitForSelector('.line-card', { timeout: 10000 });
     const lineCount = await pageA.locator('.line-card').count();
     check('台词本渲染 7 条', lineCount === 7, `实际 ${lineCount}`);
 
-    console.log('\n[B] 第二位用户加入 + 邀请条 + 在线状态');
+    console.log('\n[C] 第二位用户注册加入 + 邀请条');
     await pageB.goto(`${BASE}/r/${roomId}`, { waitUntil: 'networkidle' });
-    await pageB.fill('#nick-input', '小红');
-    await pageB.click('#btn-join');
+    check('B 打开邀请链接需先登录', await pageB.locator('#auth-panel').isVisible());
+    check('B 的房间号已预填', (await pageB.inputValue('#join-id')) === roomId);
+    await register(pageB, '小红', 'pass1234');
     await pageB.waitForSelector('#room-view:not([hidden])', { timeout: 10000 });
     await sleep(1500);
     check('A 看到邀请条（多人在线）', await pageA.locator('#invite-bar').isVisible());
     const avatarsA = await pageA.locator('#user-avatars .avatar').count();
     check('A 看到 2 个用户头像', avatarsA === 2, `实际 ${avatarsA}`);
 
-    console.log('\n[C] 台词锁定竞争');
+    console.log('\n[D] 台词锁定竞争');
     await pageB.locator('.line-card').first().locator('[data-action="record"]').click();
     await pageB.waitForSelector('#recorder-modal:not([hidden])', { timeout: 10000 });
     await sleep(1000);
@@ -102,7 +120,7 @@ async function main() {
       await pageA.locator('.line-card').first().locator('[data-action="record"]').isDisabled()
     );
 
-    console.log('\n[D] B 录音并保存');
+    console.log('\n[E] B 录音并保存');
     await sleep(1800);
     await pageB.click('#btn-rec-stop');
     await pageB.waitForSelector('#btn-rec-save:not([hidden])', { timeout: 10000 });
@@ -114,7 +132,7 @@ async function main() {
     const badgeA1 = await pageA.locator('.line-card').first().locator('.badge').textContent();
     check('A 实时看到小红已录制', badgeA1.includes('小红'), badgeA1);
 
-    console.log('\n[E] A 录制第二句（不同用户协作）');
+    console.log('\n[F] A 录制第二句（不同用户协作）');
     await pageA.locator('.line-card').nth(1).locator('[data-action="record"]').click();
     await pageA.waitForSelector('#recorder-modal:not([hidden])', { timeout: 10000 });
     await sleep(1600);
@@ -126,14 +144,17 @@ async function main() {
     const doneCount = (await pageA.textContent('#done-count')).trim();
     check('已录制计数 = 2', doneCount === '2', doneCount);
 
-    console.log('\n[F] 文字聊天');
+    console.log('\n[G] 播放与文字聊天');
+    await pageA.locator('.line-card').first().locator('[data-action="play"]').click();
+    await sleep(1200);
+    check('播放录音无报错', errorsA.filter((e) => /play|播放/i.test(e)).length === 0);
     await pageA.fill('#chat-input', '我录完第一句啦');
     await pageA.click('#chat-form button[type="submit"]');
     await sleep(1000);
     const chatB = await pageB.locator('#chat-list').textContent();
     check('B 收到小明的聊天', chatB.includes('我录完第一句啦'));
 
-    console.log('\n[G] 导出');
+    console.log('\n[H] 导出');
     const [dl1] = await Promise.all([
       pageA.waitForEvent('download', { timeout: 40000 }),
       pageA.click('#btn-export-all'),
@@ -160,7 +181,7 @@ async function main() {
       `${zipBuf.length} bytes`
     );
 
-    console.log('\n[H] 语音聊天（WebRTC）');
+    console.log('\n[I] 语音聊天（WebRTC）');
     await pageA.click('.tab[data-tab="voice"]');
     await pageB.click('.tab[data-tab="voice"]');
     await pageA.click('#btn-voice-join');
@@ -175,7 +196,17 @@ async function main() {
     });
     check('WebRTC P2P 连接已建立', p2p.length >= 1 && p2p.some((s) => s === 'connected'), JSON.stringify(p2p));
 
-    console.log('\n[I] 控制台错误');
+    console.log('\n[J] 退出登录');
+    await pageA.click('#btn-leave');
+    await pageA.waitForSelector('#lobby-panel:not([hidden])', { timeout: 8000 });
+    check('退出房间回到大厅', await pageA.locator('#lobby-panel').isVisible());
+    await pageA.click('#btn-logout');
+    await pageA.waitForSelector('#auth-panel:not([hidden])', { timeout: 8000 });
+    check('退出登录回到登录面板', await pageA.locator('#auth-panel').isVisible());
+    await pageA.goto(`${BASE}/r/${roomId}`, { waitUntil: 'networkidle' });
+    check('退出后访问房间需重新登录', await pageA.locator('#auth-panel').isVisible());
+
+    console.log('\n[K] 控制台错误');
     check('无 JS 报错', errorsA.length === 0, errorsA.slice(0, 3).join(' | '));
 
     console.log(`\n结果：${passed} 通过，${failed} 失败`);

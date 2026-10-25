@@ -8,9 +8,7 @@ const esc = (s) =>
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
 
-const LS_NICK = 'dub_nick';
-const COLORS = ['#6c8cff', '#9b6cff', '#3ecf8e', '#ffc861', '#ff8a65', '#4dd0e1', '#f06292', '#aed581'];
-
+const LS_TOKEN = 'dub_token';
 const SAMPLE_SCRIPT = [
   '旁白：夜幕降临，小镇的灯火依次亮起。',
   '小明：终于放学啦！今天作业好多啊。',
@@ -20,12 +18,6 @@ const SAMPLE_SCRIPT = [
   '小明：好吧好吧，听你的。',
   '旁白：两个小伙伴肩并肩，走进了明亮的图书馆。',
 ].join('\n');
-
-function colorFor(id) {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return COLORS[h % COLORS.length];
-}
 
 function toast(msg, type = 'info', ms = 3200) {
   const box = $('toasts');
@@ -42,36 +34,51 @@ function toast(msg, type = 'info', ms = 3200) {
 /* ---------------- 全局状态 ---------------- */
 
 const state = {
-  me: null,        // {id, name, color}
+  token: localStorage.getItem(LS_TOKEN) || '',
+  account: null,    // {id, username, color}
   roomId: null,
-  room: null,      // {id, name, lines[], chat[]}
+  room: null,       // {id, name, lines[], chat[]}
   users: [],
   socket: null,
   voice: null,
-  speaking: {},    // sid -> bool
+  speaking: {},     // sid -> bool
   editingLineId: null,
-  rec: null,       // {lineId, rec, blob, duration}
+  rec: null,        // {lineId, rec, blob, duration}
   playAll: null,
   audioEl: null,
   inviteDismissed: 0,
+  authMode: 'login',
 };
 
 /* ---------------- 网络工具 ---------------- */
 
-async function api(url, method, body) {
+async function api(url, method, body, opts = {}) {
+  const headers = {};
+  if (body) headers['Content-Type'] = 'application/json';
+  if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
   try {
     const r = await fetch(url, {
       method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      headers,
       body: body ? JSON.stringify(body) : undefined,
     });
+    if (r.status === 401) {
+      handleAuthExpired(opts.silent);
+      return null;
+    }
     const d = await r.json().catch(() => ({}));
-    if (d.error) { toast(d.error, 'error'); return null; }
+    if (d.error && !opts.silent) toast(d.error, 'error');
     return d;
   } catch (e) {
-    toast('网络错误，请稍后重试', 'error');
+    if (!opts.silent) toast('网络错误，请稍后重试', 'error');
     return null;
   }
+}
+
+function authFetch(url) {
+  const headers = {};
+  if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+  return fetch(url, { headers });
 }
 
 function emitAck(event, payload, timeout = 4000) {
@@ -86,28 +93,120 @@ function emitAck(event, payload, timeout = 4000) {
   });
 }
 
-/* ---------------- 首页 ---------------- */
+/* ---------------- 账号：登录 / 注册 ---------------- */
 
-function initHome() {
-  $('nick-input').value = localStorage.getItem(LS_NICK) || '';
+function showAuthError(msg) {
+  const el = $('auth-error');
+  el.textContent = msg;
+  el.hidden = !msg;
+}
 
+function showAuth() {
+  $('auth-panel').hidden = false;
+  $('lobby-panel').hidden = true;
+  showAuthError('');
+}
+
+function showLobby() {
+  if (!state.account) return showAuth();
+  $('auth-panel').hidden = true;
+  $('lobby-panel').hidden = false;
+  const a = $('account-avatar');
+  a.textContent = state.account.username.slice(0, 1);
+  a.style.background = state.account.color;
+  $('account-name').textContent = state.account.username;
+}
+
+function setAuthMode(mode) {
+  state.authMode = mode;
+  document.querySelectorAll('.auth-tab').forEach((t) => t.classList.toggle('active', t.dataset.auth === mode));
+  $('btn-auth-submit').textContent = mode === 'login' ? '登录' : '注册并登录';
+  showAuthError('');
+}
+
+async function submitAuth() {
+  const username = $('auth-username').value.trim();
+  const password = $('auth-password').value;
+  showAuthError('');
+  if (!username) return showAuthError('请输入用户名');
+  if (!password) return showAuthError('请输入密码');
+  const btn = $('btn-auth-submit');
+  btn.disabled = true;
+  const url = state.authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+  const d = await api(url, 'POST', { username, password }, { silent: true });
+  btn.disabled = false;
+  if (d && d.token && d.user) {
+    state.token = d.token;
+    state.account = d.user;
+    localStorage.setItem(LS_TOKEN, d.token);
+    $('auth-password').value = '';
+    showLobby();
+    toast(`${state.authMode === 'login' ? '欢迎回来' : '注册成功，欢迎加入'}，${d.user.username}`, 'ok');
+    maybeAutoEnterRoom();
+  } else {
+    showAuthError((d && d.error) || '操作失败，请重试');
+  }
+}
+
+function handleAuthExpired(silent) {
+  const wasInRoom = !!state.roomId;
+  cleanupRoom();
+  state.token = '';
+  state.account = null;
+  localStorage.removeItem(LS_TOKEN);
+  $('room-view').hidden = true;
+  $('home-view').hidden = false;
+  showAuth();
+  if (!silent) toast('登录已过期，请重新登录', 'warn');
+  else if (wasInRoom) showAuthError('登录已过期，请重新登录');
+}
+
+async function logout() {
+  await api('/api/auth/logout', 'POST', null, { silent: true });
+  cleanupRoom();
+  state.token = '';
+  state.account = null;
+  localStorage.removeItem(LS_TOKEN);
+  $('room-view').hidden = true;
+  $('home-view').hidden = false;
+  history.pushState(null, '', '/');
+  showAuth();
+  toast('已退出登录', 'info');
+}
+
+function maybeAutoEnterRoom() {
+  const m = location.pathname.match(/^\/r\/([A-Za-z0-9]{3,12})$/);
+  if (m) enterRoom(decodeURIComponent(m[1]).toUpperCase());
+}
+
+function initAuthUI() {
+  document.querySelectorAll('.auth-tab').forEach((tab) => {
+    tab.addEventListener('click', () => setAuthMode(tab.dataset.auth));
+  });
+  $('btn-auth-submit').addEventListener('click', submitAuth);
+  $('auth-password').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitAuth();
+  });
+  $('auth-username').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $('auth-password').focus();
+  });
+  $('btn-logout').addEventListener('click', logout);
+}
+
+/* ---------------- 大厅 ---------------- */
+
+function initLobbyUI() {
   $('btn-create').addEventListener('click', async () => {
-    const name = $('nick-input').value.trim();
-    if (!name) return toast('先输入你的昵称吧', 'warn');
-    localStorage.setItem(LS_NICK, name);
     const d = await api('/api/rooms', 'POST', {
-      name: `${name}的配音室`,
+      name: `${state.account.username}的配音室`,
       script: $('script-input').value,
     });
     if (d && d.room) enterRoom(d.room.id);
   });
 
   $('btn-join').addEventListener('click', () => {
-    const name = $('nick-input').value.trim();
     const id = $('join-id').value.trim().toUpperCase();
-    if (!name) return toast('先输入你的昵称吧', 'warn');
     if (!/^[A-Z0-9]{4,10}$/.test(id)) return toast('房间号格式不正确（4-10 位字母数字）', 'warn');
-    localStorage.setItem(LS_NICK, name);
     enterRoom(id);
   });
 
@@ -123,24 +222,23 @@ function initHome() {
 /* ---------------- 进入配音室 ---------------- */
 
 function enterRoom(roomId) {
-  const nick = (localStorage.getItem(LS_NICK) || '').trim() || '匿名用户';
-  let myId = localStorage.getItem('dub_uid_' + roomId);
-  if (!myId) {
-    myId = 'u-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-    localStorage.setItem('dub_uid_' + roomId, myId);
+  if (!state.account) {
+    $('join-id').value = roomId;
+    showAuthError('请先登录后再进入配音室');
+    return;
   }
-  state.me = { id: myId, name: nick, color: colorFor(myId) };
   state.roomId = roomId;
   state.inviteDismissed = 0;
   history.pushState(null, '', '/r/' + roomId);
   $('home-view').hidden = true;
   $('room-view').hidden = false;
+  $('header-account-name').textContent = state.account.username;
   connectSocket();
 }
 
 function connectSocket() {
   if (state.socket) {
-    state.socket.emit('room:join', { roomId: state.roomId, user: state.me });
+    state.socket.emit('room:join', { roomId: state.roomId, token: state.token });
     return;
   }
   const socket = io({ transports: ['websocket', 'polling'] });
@@ -149,7 +247,7 @@ function connectSocket() {
   socket.on('connect', () => {
     $('conn-status').textContent = '已连接';
     $('conn-status').className = 'conn ok';
-    socket.emit('room:join', { roomId: state.roomId, user: state.me });
+    socket.emit('room:join', { roomId: state.roomId, token: state.token });
   });
   socket.on('disconnect', () => {
     $('conn-status').textContent = '连接断开，重连中…';
@@ -162,15 +260,17 @@ function connectSocket() {
 
   socket.on('room:error', (msg) => {
     toast(msg, 'error');
-    setTimeout(() => {
-      if (!state.room) $('btn-leave').click();
-    }, 1200);
+    if (/不存在|解散/.test(msg)) {
+      setTimeout(() => {
+        if (!state.room) leaveRoom();
+      }, 1200);
+    }
   });
+  socket.on('auth:expired', () => handleAuthExpired());
 
-  socket.on('room:state', ({ room, users, me }) => {
+  socket.on('room:state', ({ room, users }) => {
     state.room = room;
     state.users = users || [];
-    if (me) state.me = { ...state.me, ...me };
     renderAll();
   });
 
@@ -247,7 +347,7 @@ function renderShell() {
 
 function lineStatus(line) {
   if (line.lockedBy) {
-    return line.lockedBy.id === state.me.id
+    return line.lockedBy.id === state.account.id
       ? { cls: 'mine', text: '🔒 你已锁定' }
       : { cls: 'other', text: `🔒 ${line.lockedBy.name} 锁定中` };
   }
@@ -332,7 +432,7 @@ function renderVoiceUsers() {
     row.className = 'voice-user' + (state.speaking[u.sid] ? ' speaking' : '');
     row.innerHTML = `
       <span class="avatar" style="background:${esc(u.color)}">${esc((u.name || '?').slice(0, 1))}</span>
-      <span class="vname">${esc(u.name)}${u.sid === (state.socket && state.socket.id) ? '（你）' : ''}</span>
+      <span class="vname">${esc(u.name)}${u.id === state.account.id ? '（你）' : ''}</span>
       <span class="vstate">${u.muted ? '🔇' : state.speaking[u.sid] ? '🎙️' : ''}</span>`;
     wrap.appendChild(row);
   });
@@ -407,7 +507,7 @@ $('btn-add-line').addEventListener('click', () => {
 /* ---------------- 录音 ---------------- */
 
 async function startRecording(line) {
-  if (line.lockedBy && line.lockedBy.id !== state.me.id) {
+  if (line.lockedBy && line.lockedBy.id !== state.account.id) {
     return toast(`该台词已被 ${line.lockedBy.name} 锁定，稍等一下再试`, 'warn');
   }
   if (line.take) {
@@ -532,8 +632,6 @@ $('btn-rec-save').addEventListener('click', async () => {
   try {
     const b64 = await AudioKit.blobToBase64(blob);
     const d = await api(`/api/rooms/${state.roomId}/lines/${lineId}/take`, 'POST', {
-      userId: state.me.id,
-      userName: state.me.name,
       duration,
       mime: blob.type || 'audio/webm',
       data: b64,
@@ -607,7 +705,7 @@ $('btn-export-all').addEventListener('click', async () => {
     const blobs = [];
     for (let i = 0; i < lines.length; i++) {
       toast(`正在解码第 ${i + 1}/${lines.length} 条…`, 'info', 1500);
-      const r = await fetch(lines[i].take.url);
+      const r = await authFetch(lines[i].take.url);
       if (!r.ok) throw new Error(`第 ${i + 1} 条录音下载失败`);
       blobs.push(await r.blob());
     }
@@ -631,7 +729,7 @@ $('btn-export-parts').addEventListener('click', async () => {
     const files = [];
     for (let i = 0; i < lines.length; i++) {
       toast(`正在打包第 ${i + 1}/${lines.length} 条…`, 'info', 1500);
-      const r = await fetch(lines[i].take.url);
+      const r = await authFetch(lines[i].take.url);
       if (!r.ok) throw new Error(`第 ${i + 1} 条录音下载失败`);
       const blob = await r.blob();
       const ext = AudioKit.extFor(blob.type);
@@ -740,9 +838,9 @@ $('btn-copy-id').addEventListener('click', async () => {
   } catch (e) { /* 忽略 */ }
 });
 
-/* ---------------- 退出 ---------------- */
+/* ---------------- 退出 / 清理 ---------------- */
 
-$('btn-leave').addEventListener('click', () => {
+function cleanupRoom() {
   stopPlayAll();
   if (state.voice) state.voice.destroy();
   if (state.socket) state.socket.disconnect();
@@ -753,25 +851,48 @@ $('btn-leave').addEventListener('click', () => {
   state.users = [];
   state.speaking = {};
   state.rec = null;
-  history.pushState(null, '', '/');
+  state.editingLineId = null;
+}
+
+function leaveRoom() {
+  cleanupRoom();
   $('room-view').hidden = true;
   $('home-view').hidden = false;
-});
+  if (state.account) {
+    history.pushState(null, '', '/');
+    showLobby();
+  } else {
+    showAuth();
+  }
+}
+
+$('btn-leave').addEventListener('click', leaveRoom);
 
 /* ---------------- 启动 ---------------- */
 
-(function boot() {
-  initHome();
-  const m = location.pathname.match(/^\/r\/([A-Za-z0-9]{3,12})$/);
-  if (m) {
-    const roomId = decodeURIComponent(m[1]).toUpperCase();
-    const nick = (localStorage.getItem(LS_NICK) || '').trim();
-    if (nick) {
-      enterRoom(roomId);
-    } else {
-      // 未设置昵称：留在首页并预填房间号，避免以匿名身份进房
-      $('join-id').value = roomId;
-      toast('输入昵称后点击「加入」进入配音室', 'info', 6000);
+(async function boot() {
+  initAuthUI();
+  initLobbyUI();
+
+  const roomFromUrl = (() => {
+    const m = location.pathname.match(/^\/r\/([A-Za-z0-9]{3,12})$/);
+    return m ? decodeURIComponent(m[1]).toUpperCase() : null;
+  })();
+
+  if (state.token) {
+    const d = await api('/api/auth/me', 'GET', null, { silent: true });
+    if (d && d.user) {
+      state.account = d.user;
+      showLobby();
+      if (roomFromUrl) enterRoom(roomFromUrl);
+      return;
     }
+    state.token = '';
+    localStorage.removeItem(LS_TOKEN);
   }
+  if (roomFromUrl) {
+    $('join-id').value = roomFromUrl;
+    showAuthError(`登录后即可进入配音室 ${roomFromUrl}`);
+  }
+  showAuth();
 })();
