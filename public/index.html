@@ -56,7 +56,7 @@
 
     <div class="home-tip">
       💡 提示：录音与语音聊天需要麦克风权限，浏览器要求在 <b>HTTPS</b> 或 <b>localhost</b> 环境下使用。<br>
-      🎯 玩法：登录 → 创建配音室 → 把邀请链接发给小伙伴 → 每人锁定自己要配的台词 → 逐段录音 → 一键合成导出成篇。
+      🎯 玩法：登录 → 创建配音室 → 把邀请链接发给小伙伴 → 在台词本选中要配的台词 → 点底部配音按钮逐段录音 → 一键合成导出成篇。
     </div>
   </div>
 </div>
@@ -125,13 +125,30 @@
   </main>
 
   <footer class="export-bar">
-    <div class="export-info">已录制 <b id="done-count">0</b> / <span id="total-count">0</span> 条</div>
+    <div class="dub-zone">
+      <div id="dub-hint" class="dub-hint">👆 在左侧台词本点击选择要配的台词</div>
+      <div id="dub-target" class="dub-target" hidden>
+        <span class="dub-label" id="dub-target-label"></span>
+        <button id="btn-dub" class="btn primary">🎙 开始配音</button>
+      </div>
+      <div class="export-info">已录制 <b id="done-count">0</b> / <span id="total-count">0</span> 条</div>
+    </div>
     <div class="export-actions">
       <button id="btn-play-all" class="btn">▶ 连播</button>
       <button id="btn-export-all" class="btn primary">⬇ 合成导出（WAV）</button>
       <button id="btn-export-parts" class="btn">⬇ 分段导出（ZIP）</button>
     </div>
   </footer>
+</div>
+
+<!-- ======== 房间不存在提示 ======== -->
+<div id="room-missing" class="modal-mask" hidden>
+  <div class="modal missing-modal">
+    <div class="missing-icon">🔍</div>
+    <h3>房间不存在或已解散</h3>
+    <p>可能原因：房间号输错，或服务器更新后房间数据被重置<br>（免费版服务器不保留录音文件，重新部署会清空房间）</p>
+    <button id="btn-missing-home" class="btn primary">返回首页</button>
+  </div>
 </div>
 
 <!-- ======== 录音弹窗 ======== -->

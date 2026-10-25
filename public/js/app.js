@@ -42,6 +42,7 @@ const state = {
   socket: null,
   voice: null,
   speaking: {},     // sid -> bool
+  selectedLineId: null,
   editingLineId: null,
   rec: null,        // {lineId, rec, blob, duration}
   playAll: null,
@@ -79,18 +80,6 @@ function authFetch(url) {
   const headers = {};
   if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
   return fetch(url, { headers });
-}
-
-function emitAck(event, payload, timeout = 4000) {
-  return new Promise((resolve) => {
-    let done = false;
-    const t = setTimeout(() => {
-      if (!done) { done = true; resolve({ ok: false, error: '网络超时，请重试' }); }
-    }, timeout);
-    state.socket.emit(event, payload, (res) => {
-      if (!done) { done = true; clearTimeout(t); resolve(res || { ok: false }); }
-    });
-  });
 }
 
 /* ---------------- 账号：登录 / 注册 ---------------- */
@@ -229,11 +218,20 @@ function enterRoom(roomId) {
   }
   state.roomId = roomId;
   state.inviteDismissed = 0;
+  state.selectedLineId = null;
   history.pushState(null, '', '/r/' + roomId);
   $('home-view').hidden = true;
   $('room-view').hidden = false;
+  $('room-missing').hidden = true;
   $('header-account-name').textContent = state.account.username;
   connectSocket();
+  // 免费服务冷启动提示
+  clearTimeout(state.coldStartTimer);
+  state.coldStartTimer = setTimeout(() => {
+    if (!state.socket || !state.socket.connected) {
+      toast('服务器冷启动中（免费服务约需 30-60 秒），请稍候…', 'info', 8000);
+    }
+  }, 3500);
 }
 
 function connectSocket() {
@@ -241,7 +239,7 @@ function connectSocket() {
     state.socket.emit('room:join', { roomId: state.roomId, token: state.token });
     return;
   }
-  const socket = io({ transports: ['websocket', 'polling'] });
+  const socket = io({ transports: ['polling', 'websocket'] });
   state.socket = socket;
 
   socket.on('connect', () => {
@@ -259,11 +257,10 @@ function connectSocket() {
   });
 
   socket.on('room:error', (msg) => {
-    toast(msg, 'error');
     if (/不存在|解散/.test(msg)) {
-      setTimeout(() => {
-        if (!state.room) leaveRoom();
-      }, 1200);
+      $('room-missing').hidden = false;
+    } else {
+      toast(msg, 'error');
     }
   });
   socket.on('auth:expired', () => handleAuthExpired());
@@ -271,6 +268,7 @@ function connectSocket() {
   socket.on('room:state', ({ room, users }) => {
     state.room = room;
     state.users = users || [];
+    state.selectedLineId = null;
     renderAll();
   });
 
@@ -322,6 +320,7 @@ function applyLine(line) {
   const idx = state.room.lines.findIndex((l) => l.id === line.id);
   if (idx >= 0) state.room.lines[idx] = line;
   renderLines();
+  renderDubZone();
   updateCounts();
 }
 
@@ -331,6 +330,7 @@ function renderAll() {
   renderShell();
   renderLines();
   renderUsers();
+  renderDubZone();
   updateCounts();
   const list = $('chat-list');
   list.innerHTML = '';
@@ -346,11 +346,6 @@ function renderShell() {
 }
 
 function lineStatus(line) {
-  if (line.lockedBy) {
-    return line.lockedBy.id === state.account.id
-      ? { cls: 'mine', text: '🔒 你已锁定' }
-      : { cls: 'other', text: `🔒 ${line.lockedBy.name} 锁定中` };
-  }
   if (line.take) return { cls: 'done', text: `✅ ${line.take.byName} 已录制` };
   return { cls: 'todo', text: '待录制' };
 }
@@ -363,8 +358,9 @@ function renderLines() {
   $('lines-empty').hidden = lines.length > 0;
   lines.forEach((line, i) => {
     const st = lineStatus(line);
+    const selected = state.selectedLineId === line.id;
     const card = document.createElement('div');
-    card.className = `line-card ${st.cls}`;
+    card.className = `line-card ${st.cls}${selected ? ' selected' : ''}`;
     card.dataset.lineId = line.id;
 
     if (state.editingLineId === line.id) {
@@ -390,7 +386,6 @@ function renderLines() {
         </div>
         <div class="line-actions">
           ${line.take ? '<button class="btn icon" data-action="play" title="播放录音">▶</button>' : ''}
-          <button class="btn ${st.cls === 'other' ? '' : 'primary'} sm" data-action="record" ${st.cls === 'other' ? 'disabled' : ''}>${line.take ? '↻ 重录' : '🎙 录制'}</button>
           <button class="btn ghost icon" data-action="edit" title="编辑台词">✎</button>
           <button class="btn ghost icon" data-action="delete" title="删除台词">✕</button>
         </div>`;
@@ -398,6 +393,37 @@ function renderLines() {
     wrap.appendChild(card);
   });
 }
+
+/* ---------- 选中配音 ---------- */
+
+function selectLine(lineId) {
+  state.selectedLineId = state.selectedLineId === lineId ? null : lineId;
+  renderLines();
+  renderDubZone();
+}
+
+function renderDubZone() {
+  if (!state.room) return;
+  const hint = $('dub-hint');
+  const target = $('dub-target');
+  const line = state.room.lines.find((l) => l.id === state.selectedLineId);
+  if (!line) {
+    hint.hidden = false;
+    target.hidden = true;
+    return;
+  }
+  hint.hidden = true;
+  target.hidden = false;
+  const no = state.room.lines.indexOf(line) + 1;
+  const preview = line.text.length > 24 ? line.text.slice(0, 24) + '…' : line.text;
+  $('dub-target-label').textContent = `第 ${no} 条${line.speaker ? ' · ' + line.speaker : ''}：${preview}`;
+  $('btn-dub').textContent = line.take ? '↻ 重新配音' : '🎙 开始配音';
+}
+
+$('btn-dub').addEventListener('click', () => {
+  const line = state.room.lines.find((l) => l.id === state.selectedLineId);
+  if (line) startRecording(line);
+});
 
 function renderUsers() {
   const wrap = $('user-avatars');
@@ -450,16 +476,21 @@ function updateCounts() {
 /* ---------------- 台词操作 ---------------- */
 
 $('lines-list').addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-action]');
-  if (!btn) return;
-  const card = btn.closest('.line-card');
+  const card = e.target.closest('.line-card');
+  if (!card || !state.room) return;
   const lineId = card.dataset.lineId;
   const line = state.room.lines.find((l) => l.id === lineId);
   if (!line) return;
-  const action = btn.dataset.action;
+  const btn = e.target.closest('[data-action]');
 
-  if (action === 'record') startRecording(line);
-  else if (action === 'play') playTake(line);
+  // 点击卡片本体：选中/取消选中该句
+  if (!btn) {
+    if (state.editingLineId !== lineId) selectLine(lineId);
+    return;
+  }
+
+  const action = btn.dataset.action;
+  if (action === 'play') playTake(line);
   else if (action === 'edit') { state.editingLineId = lineId; renderLines(); }
   else if (action === 'cancel-edit') { state.editingLineId = null; renderLines(); }
   else if (action === 'save-edit') {
@@ -471,7 +502,9 @@ $('lines-list').addEventListener('click', async (e) => {
   } else if (action === 'delete') {
     const no = state.room.lines.indexOf(line) + 1;
     if (!confirm(`删除第 ${no} 条台词${line.take ? '（含已录制的录音）' : ''}？`)) return;
+    if (state.selectedLineId === lineId) state.selectedLineId = null;
     await api(`/api/rooms/${state.roomId}/lines/${lineId}`, 'DELETE');
+    renderDubZone();
   }
 });
 
@@ -507,28 +540,11 @@ $('btn-add-line').addEventListener('click', () => {
 /* ---------------- 录音 ---------------- */
 
 async function startRecording(line) {
-  if (line.lockedBy && line.lockedBy.id !== state.account.id) {
-    return toast(`该台词已被 ${line.lockedBy.name} 锁定，稍等一下再试`, 'warn');
-  }
   if (line.take) {
     const no = state.room.lines.indexOf(line) + 1;
-    if (!confirm(`第 ${no} 条已有 ${line.take.byName} 的录音，重新录制将覆盖它，确定？`)) return;
-  }
-  if (!line.lockedBy) {
-    const res = await emitAck('line:lock', { lineId: line.id });
-    if (!res.ok) {
-      toast(res.error || '锁定失败，请重试', 'warn');
-      renderLines();
-      return;
-    }
+    if (!confirm(`第 ${no} 条已有 ${line.take.byName} 的配音，重新录制将覆盖它，确定？`)) return;
   }
   await openRecorder(line);
-}
-
-function unlockLine(lineId) {
-  if (state.socket && state.socket.connected) {
-    state.socket.emit('line:unlock', { lineId });
-  }
 }
 
 async function openRecorder(line) {
@@ -571,7 +587,6 @@ async function openRecorder(line) {
     modal.hidden = true;
     state.rec = null;
     toast(e.message || '录音启动失败', 'error');
-    unlockLine(line.id);
   }
 }
 
@@ -615,12 +630,10 @@ $('btn-rec-retry').addEventListener('click', async () => {
 });
 
 $('btn-rec-cancel').addEventListener('click', () => {
-  const lineId = state.rec && state.rec.lineId;
   if (state.rec && state.rec.rec) state.rec.rec.cancel();
   state.rec = null;
   $('recorder-modal').hidden = true;
   stopMeter();
-  if (lineId) unlockLine(lineId);
 });
 
 $('btn-rec-save').addEventListener('click', async () => {
@@ -852,6 +865,7 @@ function cleanupRoom() {
   state.speaking = {};
   state.rec = null;
   state.editingLineId = null;
+  state.selectedLineId = null;
 }
 
 function leaveRoom() {
@@ -867,6 +881,11 @@ function leaveRoom() {
 }
 
 $('btn-leave').addEventListener('click', leaveRoom);
+
+$('btn-missing-home').addEventListener('click', () => {
+  $('room-missing').hidden = true;
+  leaveRoom();
+});
 
 /* ---------------- 启动 ---------------- */
 

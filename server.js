@@ -5,7 +5,7 @@
  * Express + Socket.io
  * - 账号系统（注册 / 登录 / 令牌会话）
  * - 配音室（房间）创建 / 加入 / 持久化
- * - 台词本增删改、台词锁定（含过期接管）
+ * - 台词本增删改、选中配音（无锁定，先选句再录音）
  * - 分段录音上传 / 下载
  * - 文字聊天、在线状态
  * - WebRTC 语音信令转发
@@ -23,7 +23,6 @@ const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const TAKES_DIR = path.join(DATA_DIR, 'takes');
 const MAX_TAKE_MB = 20;
-const LOCK_STALE_MS = 10 * 60 * 1000; // 锁定 10 分钟未操作可被接管
 
 fs.mkdirSync(TAKES_DIR, { recursive: true });
 
@@ -341,7 +340,6 @@ api.post('/rooms', (req, res) => {
     id: crypto.randomUUID(),
     speaker: l.speaker,
     text: l.text,
-    lockedBy: null,
     take: null,
   }));
   room.lines = lines;
@@ -366,7 +364,6 @@ api.post('/rooms/:roomId/lines', (req, res) => {
     id: crypto.randomUUID(),
     speaker: (req.body.speaker || '').toString().slice(0, 20),
     text,
-    lockedBy: null,
     take: null,
   };
   room.lines.push(line);
@@ -447,7 +444,6 @@ api.post('/rooms/:roomId/lines/:lineId/take', (req, res) => {
     mime: mime || MIME_BY_EXT[ext],
     url: `/api/rooms/${room.id}/take/${line.id}`,
   };
-  line.lockedBy = null; // 录完自动解锁
   persistSoon();
   io.to(room.id).emit('line:updated', line);
   res.json({ line });
@@ -523,40 +519,6 @@ io.on('connection', (socket) => {
     socket.emit('room:state', { room: roomState(room), users: usersOf(room), me });
   });
 
-  // 台词锁定（ack 回执，失败时前端不进入录音）
-  socket.on('line:lock', ({ lineId } = {}, ack) => {
-    const room = rooms.get(socket.data.roomId);
-    const me = room && room.users.get(socket.id);
-    const line = findLine(room, lineId);
-    if (!room || !me || !line) {
-      if (ack) ack({ ok: false, error: '台词不存在' });
-      return;
-    }
-    if (line.lockedBy && line.lockedBy.id !== me.id) {
-      const stale = Date.now() - (line.lockedBy.at || 0) > LOCK_STALE_MS;
-      if (!stale) {
-        const msg = `该台词已被 ${line.lockedBy.name} 锁定`;
-        socket.emit('line:error', msg);
-        if (ack) ack({ ok: false, error: msg });
-        return;
-      }
-    }
-    line.lockedBy = { id: me.id, name: me.name, at: Date.now() };
-    io.to(room.id).emit('line:updated', line);
-    if (ack) ack({ ok: true });
-  });
-
-  socket.on('line:unlock', ({ lineId } = {}) => {
-    const room = rooms.get(socket.data.roomId);
-    const me = room && room.users.get(socket.id);
-    const line = findLine(room, lineId);
-    if (!room || !me || !line || !line.lockedBy) return;
-    if (line.lockedBy.id === me.id) {
-      line.lockedBy = null;
-      io.to(room.id).emit('line:updated', line);
-    }
-  });
-
   // 文字聊天
   socket.on('chat:message', ({ text } = {}) => {
     const room = rooms.get(socket.data.roomId);
@@ -624,12 +586,6 @@ io.on('connection', (socket) => {
     // 同一账号还有其他标签页在场，则不广播离开
     const stillHere = [...room.users.values()].some((u) => u.id === me.id);
     if (!stillHere) {
-      for (const line of room.lines) {
-        if (line.lockedBy && line.lockedBy.id === me.id) {
-          line.lockedBy = null;
-          io.to(room.id).emit('line:updated', line);
-        }
-      }
       const sysMsg = { id: crypto.randomUUID(), system: true, text: `${me.name} 离开了配音室`, at: Date.now() };
       pushChat(room, sysMsg);
       io.to(room.id).emit('chat:message', sysMsg);

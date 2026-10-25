@@ -151,11 +151,18 @@ label { display: block; color: var(--muted); font-size: 12px; margin: 14px 0 6px
   display: flex; gap: 12px; background: var(--panel); border: 1px solid var(--border);
   border-left: 3px solid var(--border); border-radius: var(--radius);
   padding: 12px 14px; align-items: flex-start; transition: border-color .15s, box-shadow .15s;
+  cursor: pointer;
 }
 .line-card.mine { border-left-color: var(--yellow); }
 .line-card.other { border-left-color: var(--red); opacity: .85; }
 .line-card.done { border-left-color: var(--green); }
 .line-card.playing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.line-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  background: rgba(108, 140, 255, .07);
+}
+.line-card.selected .line-no { background: var(--accent); color: #fff; }
 
 .line-no {
   min-width: 26px; height: 26px; border-radius: 8px; background: var(--panel-2);
@@ -200,14 +207,27 @@ label { display: block; color: var(--muted); font-size: 12px; margin: 14px 0 6px
 .vstate { width: 20px; text-align: center; }
 .voice-tip { color: var(--muted); font-size: 12px; line-height: 1.7; }
 
-/* ---------- 导出栏 ---------- */
+/* ---------- 导出栏 / 选中配音 ---------- */
 .export-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 16px; background: var(--panel); border-top: 1px solid var(--border); flex-wrap: wrap;
 }
+.dub-zone { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.dub-hint { color: var(--muted); font-size: 13px; }
+.dub-target { display: flex; align-items: center; gap: 10px; }
+.dub-label {
+  font-size: 13px; color: var(--text); max-width: 300px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .export-info { color: var(--muted); font-size: 13px; }
 .export-info b { color: var(--text); font-size: 15px; }
 .export-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- 房间不存在 ---------- */
+.missing-modal { text-align: center; max-width: 420px; }
+.missing-modal h3 { margin: 10px 0; font-size: 18px; }
+.missing-modal p { color: var(--muted); line-height: 1.8; margin-bottom: 18px; font-size: 13px; }
+.missing-icon { font-size: 42px; }
 
 /* ---------- 录音弹窗 ---------- */
 .modal-mask {

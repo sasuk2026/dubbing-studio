@@ -2,7 +2,7 @@
 
 /**
  * 浏览器端到端测试（Playwright + Chromium 虚拟麦克风）
- * 验证：注册/登录、建房/示例台词、双人在线/邀请条、台词锁定竞争、
+ * 验证：注册/登录、建房/示例台词、双人在线/邀请条、选中台词出现配音按钮、
  *       录音保存/实时同步、聊天、导出 WAV+ZIP、WebRTC 语音
  * 运行：NODE_PATH=$(npm root -g) node test/e2e.js
  */
@@ -109,18 +109,19 @@ async function main() {
     const avatarsA = await pageA.locator('#user-avatars .avatar').count();
     check('A 看到 2 个用户头像', avatarsA === 2, `实际 ${avatarsA}`);
 
-    console.log('\n[D] 台词锁定竞争');
-    await pageB.locator('.line-card').first().locator('[data-action="record"]').click();
-    await pageB.waitForSelector('#recorder-modal:not([hidden])', { timeout: 10000 });
-    await sleep(1000);
-    const badgeA = await pageA.locator('.line-card').first().locator('.badge').textContent();
-    check('A 看到该台词被小红锁定', badgeA.includes('小红'), badgeA);
+    console.log('\n[D] 选中台词出现配音按钮');
+    await pageB.locator('.line-card').first().click();
+    await pageB.waitForSelector('#dub-target:not([hidden])', { timeout: 5000 });
+    check('选中台词后出现配音按钮', await pageB.locator('#btn-dub').isVisible());
     check(
-      'A 的录制按钮被禁用',
-      await pageA.locator('.line-card').first().locator('[data-action="record"]').isDisabled()
+      '配音按钮显示目标台词',
+      (await pageB.textContent('#dub-target-label')).includes('第 1 条'),
+      await pageB.textContent('#dub-target-label')
     );
 
-    console.log('\n[E] B 录音并保存');
+    console.log('\n[E] B 点击配音按钮录音并保存');
+    await pageB.click('#btn-dub');
+    await pageB.waitForSelector('#recorder-modal:not([hidden])', { timeout: 10000 });
     await sleep(1800);
     await pageB.click('#btn-rec-stop');
     await pageB.waitForSelector('#btn-rec-save:not([hidden])', { timeout: 10000 });
@@ -133,7 +134,9 @@ async function main() {
     check('A 实时看到小红已录制', badgeA1.includes('小红'), badgeA1);
 
     console.log('\n[F] A 录制第二句（不同用户协作）');
-    await pageA.locator('.line-card').nth(1).locator('[data-action="record"]').click();
+    await pageA.locator('.line-card').nth(1).click();
+    await pageA.waitForSelector('#dub-target:not([hidden])', { timeout: 5000 });
+    await pageA.click('#btn-dub');
     await pageA.waitForSelector('#recorder-modal:not([hidden])', { timeout: 10000 });
     await sleep(1600);
     await pageA.click('#btn-rec-stop');

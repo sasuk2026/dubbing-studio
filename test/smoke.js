@@ -148,12 +148,6 @@ async function main() {
       && presenceOnB.some((u) => u.name === '小明')
       && presenceOnB.some((u) => u.name === '小红'));
 
-    const lockRes = await new Promise((r) => a.emit('line:lock', { lineId }, (res) => r(res)));
-    check('A 锁定台词成功', lockRes && lockRes.ok === true);
-
-    const lockRes2 = await new Promise((r) => b.emit('line:lock', { lineId }, (res) => r(res)));
-    check('B 锁定同一台词被拒绝', lockRes2 && lockRes2.ok === false && /锁定/.test(lockRes2.error || ''));
-
     a.emit('chat:message', { text: '大家好呀' });
     await sleep(300);
     check('B 收到文字聊天', chatOnB && chatOnB.text === '大家好呀' && chatOnB.byName === '小明');
@@ -167,7 +161,6 @@ async function main() {
     }, tokenA);
     check('上传录音（录制者取自账号）', up.status === 200 && up.json && up.json.line.take
       && up.json.line.take.byName === '小明' && up.json.line.take.by === reg.json.user.id);
-    check('保存后自动解除锁定', up.json && up.json.line.lockedBy === null);
     const dl = await req('GET', up.json.line.take.url, null, tokenA);
     check('下载录音文件', dl.status === 200 && dl.raw.length >= 44 && dl.raw.toString('base64') === wavB64);
     const dlCookie = await req('GET', up.json.line.take.url);
@@ -185,14 +178,15 @@ async function main() {
     console.log('\n[6] 断线清理');
     let sysOnB = null;
     b.on('chat:message', (m) => { if (m.system) sysOnB = m; });
-    let lineUpdOnB = null;
-    b.on('line:updated', (l) => { if (l.id === room.lines[0].id) lineUpdOnB = l; });
-    const lockAgain = await new Promise((r) => a.emit('line:lock', { lineId: room.lines[0].id }, (res) => r(res)));
-    check('A 锁定另一条台词', lockAgain && lockAgain.ok === true);
+    let removedOnB = null;
+    b.on('line:removed', (d) => { removedOnB = d; });
+    const del = await req('DELETE', `/api/rooms/${room.id}/lines/${room.lines[0].id}`, null, tokenA);
+    check('删除台词', del.status === 200);
+    await sleep(300);
+    check('B 收到删除广播', removedOnB && removedOnB.lineId === room.lines[0].id);
     await sleep(200);
     a.close();
     await sleep(700);
-    check('A 断线后锁定被自动释放', lineUpdOnB && lineUpdOnB.lockedBy === null);
     check('A 断线后广播离开通知', !!sysOnB);
     b.close();
 
