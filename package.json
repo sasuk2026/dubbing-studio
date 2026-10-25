@@ -1,0 +1,21 @@
+{
+  "name": "dubbing-studio",
+  "version": "1.0.0",
+  "description": "在线协作配音工坊：多人配音室、台词锁定、分段录音、合成导出、语音/文字聊天",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.7.5"
+  }
+}

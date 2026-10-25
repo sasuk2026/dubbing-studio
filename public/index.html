@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>配音工坊 · 多人在线协作配音</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<!-- ======== 首页 ======== -->
+<div id="home-view" class="view">
+  <div class="home-card">
+    <div class="logo">🎬 配音工坊</div>
+    <p class="tagline">多人实时协作配音 · 锁词录音 · 一键合成导出 · 语音 / 文字聊天</p>
+
+    <label>你的昵称</label>
+    <input id="nick-input" maxlength="12" placeholder="输入昵称，小伙伴们会看到你" autocomplete="off">
+
+    <div class="home-actions">
+      <button id="btn-create" class="btn primary">创建配音室</button>
+      <div class="join-box">
+        <input id="join-id" maxlength="10" placeholder="输入房间号" autocomplete="off">
+        <button id="btn-join" class="btn">加入</button>
+      </div>
+    </div>
+
+    <details class="script-setup">
+      <summary>📜 粘贴台词本（可选，每行一句，支持「角色：台词」）</summary>
+      <textarea id="script-input" placeholder="旁白：很久很久以前……&#10;小明：我们出发吧！&#10;小红：等等我～"></textarea>
+      <button class="btn ghost sm sample-btn" data-sample type="button">载入示例台词</button>
+    </details>
+
+    <div class="home-tip">
+      💡 提示：录音与语音聊天需要麦克风权限，浏览器要求在 <b>HTTPS</b> 或 <b>localhost</b> 环境下使用。<br>
+      🎯 玩法：创建配音室 → 把邀请链接发给小伙伴 → 每人锁定自己要配的台词 → 逐段录音 → 一键合成导出成篇。
+    </div>
+  </div>
+</div>
+
+<!-- ======== 配音室 ======== -->
+<div id="room-view" class="view" hidden>
+  <header class="room-header">
+    <div class="room-title">
+      <span>🎬</span>
+      <span id="room-name">配音室</span>
+      <button id="btn-copy-id" class="chip" title="点击复制房间号">#<span id="room-id"></span> ⧉</button>
+    </div>
+    <div class="room-users">
+      <div id="user-avatars" class="avatars"></div>
+      <span id="conn-status" class="conn ok">连接中…</span>
+      <button id="btn-leave" class="btn ghost sm">退出</button>
+    </div>
+  </header>
+
+  <div id="invite-bar" class="invite-bar" hidden>
+    <span>👥 <b id="invite-count">0</b> 位小伙伴在线，邀请更多人一起配音吧</span>
+    <input id="invite-link" readonly title="配音室邀请链接">
+    <button id="btn-copy-invite" class="btn primary sm">复制邀请链接</button>
+    <button id="btn-close-invite" class="btn ghost sm" title="暂时收起">✕</button>
+  </div>
+
+  <main class="room-main">
+    <section class="lines-panel">
+      <div class="panel-head">
+        <h2>台词本 <span id="lines-count" class="count">(0)</span></h2>
+        <button id="btn-add-line" class="btn sm">＋ 添加台词</button>
+      </div>
+      <div id="lines-list" class="lines-list"></div>
+      <div id="lines-empty" class="empty" hidden>还没有台词，点击右上角「添加台词」开始吧</div>
+    </section>
+
+    <aside class="side-panel">
+      <div class="tabs">
+        <button class="tab active" data-tab="chat">💬 聊天</button>
+        <button class="tab" data-tab="voice">🎙️ 语音</button>
+      </div>
+
+      <div id="tab-chat" class="tab-page">
+        <div id="chat-list" class="chat-list"></div>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" maxlength="500" placeholder="说点什么…" autocomplete="off">
+          <button class="btn primary sm" type="submit">发送</button>
+        </form>
+      </div>
+
+      <div id="tab-voice" class="tab-page" hidden>
+        <div class="voice-wrap">
+          <button id="btn-voice-join" class="btn primary big">🎙️ 加入语音聊天</button>
+          <div id="voice-room" hidden>
+            <div class="voice-controls">
+              <button id="btn-voice-mute" class="btn">🔇 静音</button>
+              <button id="btn-voice-leave" class="btn ghost">离开语音</button>
+            </div>
+            <div id="voice-users" class="voice-users"></div>
+          </div>
+          <p class="voice-tip">语音为点对点（P2P）传输，2～6 人效果最佳；按钮旁的绿圈表示正在说话。</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="export-bar">
+    <div class="export-info">已录制 <b id="done-count">0</b> / <span id="total-count">0</span> 条</div>
+    <div class="export-actions">
+      <button id="btn-play-all" class="btn">▶ 连播</button>
+      <button id="btn-export-all" class="btn primary">⬇ 合成导出（WAV）</button>
+      <button id="btn-export-parts" class="btn">⬇ 分段导出（ZIP）</button>
+    </div>
+  </footer>
+</div>
+
+<!-- ======== 录音弹窗 ======== -->
+<div id="recorder-modal" class="modal-mask" hidden>
+  <div class="modal">
+    <div class="rec-line">
+      <span class="rec-speaker" id="rec-speaker"></span>
+      <span class="rec-text" id="rec-text"></span>
+    </div>
+    <div class="rec-status">
+      <span id="rec-state">准备中…</span>
+      <span id="rec-timer" class="rec-timer">00:00</span>
+    </div>
+    <canvas id="rec-meter" width="480" height="60"></canvas>
+    <audio id="rec-preview" controls hidden></audio>
+    <div class="rec-actions">
+      <button id="btn-rec-stop" class="btn primary" hidden>⏹ 停止</button>
+      <button id="btn-rec-save" class="btn primary" hidden>💾 保存录音</button>
+      <button id="btn-rec-retry" class="btn" hidden>↻ 重录</button>
+      <button id="btn-rec-cancel" class="btn ghost">取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" class="toasts"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/audio.js"></script>
+<script src="/js/voice.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
