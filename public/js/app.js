@@ -675,8 +675,79 @@ async function openRecorder(line) {
   } catch (e) {
     modal.hidden = true;
     state.rec = null;
-    toast(e.message || '录音启动失败', 'error');
+    toast(micErrorMessage(e), 'error', 8000);
   }
+}
+
+/* ---------- 录音错误分类与内嵌浏览器引导 ---------- */
+
+// WPS / 微信 / QQ / 支付宝 / 抖音等 App 内置 WebView：多数未实现网页麦克风授权
+function isEmbeddedBrowser() {
+  const ua = navigator.userAgent || '';
+  return /wps|kingsoft|micromessenger|qq\/|alipay|dingtalk|weibo|douyin|toutiao/i.test(ua);
+}
+
+// 把麦克风错误翻译成用户能懂、能动手解决的话
+function micErrorMessage(e) {
+  const name = e && (e.name || e.code || '');
+  switch (name) {
+    case 'NotAllowedError':
+    case 'PermissionDeniedError':
+    case 'SecurityError':
+    case 'NotSupportedError': // 无头/部分 WebView 无权限 UI 时也走引导分支
+      if (isEmbeddedBrowser()) {
+        return '麦克风权限被拒绝：当前 App 内置浏览器不支持网页录音，请点右上角 ⋮ 选择「用系统浏览器打开」';
+      }
+      return '麦克风权限被拒绝：请在浏览器地址栏左侧的权限图标里允许麦克风，或到系统设置中开启';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+    case 'DevicesNotFoundError':
+      return '未检测到麦克风设备，请连接麦克风后重试';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return '麦克风被其他程序占用，请关闭其他录音/会议软件后重试';
+    case 'UNSUPPORTED':
+    case 'TypeError':
+      if (isEmbeddedBrowser()) {
+        return '当前 App 内置浏览器不支持网页录音，请点右上角 ⋮ 选择「用系统浏览器打开」';
+      }
+      return '当前浏览器不支持网页录音，请使用最新版 Chrome / Safari 打开';
+    default:
+      return (e && e.message) || '录音启动失败，请重试';
+  }
+}
+
+// 检测到 App 内置 WebView 或非 HTTPS 时，顶部显示引导条
+function initBrowserTip() {
+  const tip = $('browser-tip');
+  if (!tip) return;
+  const embedded = isEmbeddedBrowser();
+  if (!embedded && window.isSecureContext) return;
+  $('browser-tip-text').textContent = embedded
+    ? '检测到你在 App 内置浏览器中打开，网页录音可能因权限受限无法使用。请点右上角 ⋮ 选择「在浏览器中打开」，或复制链接到系统浏览器：'
+    : '当前不是 HTTPS 安全连接，浏览器会禁止录音。请通过 https://yuechupeiyinshi.onrender.com 访问：';
+  tip.hidden = false;
+  on('btn-copy-link', 'click', async () => {
+    try {
+      await navigator.clipboard.writeText(location.href);
+      toast('链接已复制，请粘贴到系统浏览器打开', 'ok');
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = location.href;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        toast('链接已复制，请粘贴到系统浏览器打开', 'ok');
+      } catch (e2) {
+        toast('复制失败，请手动复制地址栏链接', 'warn');
+      }
+      ta.remove();
+    }
+  });
+  on('btn-browser-tip-close', 'click', () => { tip.hidden = true; });
 }
 
 let meterCtx = null;
@@ -1204,7 +1275,7 @@ on('btn-missing-home', 'click', () => {
 // 版本自检：若浏览器拿到的是旧版 HTML（如缓存未过期），与新版 JS 组合会导致
 // 元素缺失、脚本失效。检测到版本不匹配时强制刷新（带防循环保护）。
 (function versionGuard() {
-  const APP_VERSION = '5';
+  const APP_VERSION = '6';
   const meta = document.querySelector('meta[name="app-version"]');
   if (meta && meta.content !== APP_VERSION) {
     try {
@@ -1241,6 +1312,7 @@ window.addEventListener('unhandledrejection', (e) => {
     initAuthUI();
     initLobbyUI();
     initMergeSettingsUI();
+    initBrowserTip();
 
     const roomFromUrl = (() => {
       const m = location.pathname.match(/^\/r\/([A-Za-z0-9]{3,12})$/);

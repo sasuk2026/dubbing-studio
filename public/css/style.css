@@ -163,6 +163,18 @@ label { display: block; color: var(--muted); font-size: 12px; margin: 14px 0 6px
   padding: 12px 14px; align-items: flex-start; transition: border-color .15s, box-shadow .15s;
   cursor: pointer;
 }
+/* ---------- App 内置浏览器引导条 ---------- */
+.browser-tip {
+  position: sticky; top: 0; z-index: 60;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: linear-gradient(90deg, rgba(255, 176, 32, .18), rgba(255, 107, 107, .18));
+  border-bottom: 1px solid rgba(255, 176, 32, .45);
+  backdrop-filter: blur(14px);
+  padding: 9px 14px; font-size: 13px; line-height: 1.6; color: var(--text);
+}
+.browser-tip-text { flex: 1; min-width: 220px; }
+.browser-tip-actions { display: flex; gap: 6px; flex: none; }
+.browser-tip .btn.sm { padding: 5px 10px; font-size: 12px; }
 /* 分段导出勾选框 */
 .part-check {
   flex: none; width: 16px; height: 16px; margin-top: 3px; cursor: pointer;

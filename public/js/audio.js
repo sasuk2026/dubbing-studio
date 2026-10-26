@@ -60,6 +60,30 @@ const AudioKit = (() => {
     return 'webm';
   }
 
+  /* ---------- 麦克风兼容层 ---------- *
+   * 标准 API：navigator.mediaDevices.getUserMedia（HTTPS 下的现代浏览器）
+   * 回退 API：navigator.getUserMedia / webkitGetUserMedia（部分 App 内置 WebView、旧浏览器只暴露这些）
+   * 两者都没有（或非安全上下文）→ 抛 UNSUPPORTED，由上层引导用户换系统浏览器 */
+  function getMic(constraints) {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      return navigator.mediaDevices.getUserMedia(constraints);
+    }
+    const legacy = navigator.getUserMedia
+      || navigator.webkitGetUserMedia
+      || navigator.mozGetUserMedia
+      || navigator.msGetUserMedia;
+    if (legacy) {
+      return new Promise((resolve, reject) => {
+        try {
+          legacy.call(navigator, constraints, resolve, reject);
+        } catch (e) { reject(e); }
+      });
+    }
+    const err = new Error('当前内置浏览器不支持网页录音');
+    err.code = 'UNSUPPORTED';
+    return Promise.reject(err);
+  }
+
   /* ---------- 单条录音器 ---------- */
   class TakeRecorder {
     constructor() {
@@ -81,10 +105,7 @@ const AudioKit = (() => {
     }
 
     async start(lossless = false) {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('当前浏览器不支持录音（需 HTTPS 或 localhost 环境）');
-      }
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      this.stream = await getMic({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       this.lossless = !!lossless;
@@ -92,7 +113,13 @@ const AudioKit = (() => {
       if (this.lossless) {
         this.startPcmCapture();
       } else {
-        this.startMediaRecorder();
+        try {
+          this.startMediaRecorder();
+        } catch (e) {
+          // MediaRecorder 不可用（部分老旧 WebView）：自动降级无损 PCM 采集，录音功能不中断
+          this.lossless = true;
+          this.startPcmCapture();
+        }
       }
       this.timer = setInterval(() => {
         if (this.onTick) this.onTick(Date.now() - this.startedAt);

@@ -3,12 +3,21 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="app-version" content="5">
+<meta name="app-version" content="6">
 <title>配音工坊 · 多人在线协作配音</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
-<link rel="stylesheet" href="/css/style.css?v=5">
+<link rel="stylesheet" href="/css/style.css?v=6">
 </head>
 <body>
+
+<!-- App 内置浏览器 / 非 HTTPS 引导条（JS 检测后显示） -->
+<div id="browser-tip" class="browser-tip" hidden>
+  <span class="browser-tip-text" id="browser-tip-text"></span>
+  <div class="browser-tip-actions">
+    <button id="btn-copy-link" class="btn sm">复制链接</button>
+    <button id="btn-browser-tip-close" class="btn ghost sm icon" title="关闭">✕</button>
+  </div>
+</div>
 
 <!-- ======== 首页 ======== -->
 <div id="home-view" class="view">
@@ -222,9 +231,9 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/js/vendor/lame.min.js"></script>
-<script src="/js/audio.js?v=5"></script>
-<script src="/js/voice.js?v=5"></script>
-<script src="/js/fx.js?v=5"></script>
-<script src="/js/app.js?v=5"></script>
+<script src="/js/audio.js?v=6"></script>
+<script src="/js/voice.js?v=6"></script>
+<script src="/js/fx.js?v=6"></script>
+<script src="/js/app.js?v=6"></script>
 </body>
 </html>
